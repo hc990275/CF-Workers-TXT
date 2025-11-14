@@ -4,6 +4,8 @@
 
 [<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/0/09/YouTube_full-color_icon_%282017%29.svg/40px-YouTube_full-color_icon_%282017%29.svg.png" width="24"> 查看视频](https://www.youtube.com/watch?v=j3jFkGo4czQ)
 
+<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/2b7051bc-222c-4a88-b620-7c4a8f07a352" />
+
 ## 🚀 功能概览
 在线编辑与实时保存
 可设置分享口令（Token）
