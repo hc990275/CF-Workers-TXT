@@ -9,6 +9,32 @@ let ADMIN_UUID = null;
 let FileName = 'CF-Workers-TEXT';
 
 const CONTENT_FILE = 'CONTENT.txt';
+const LEGACY_CONTENT_FILE = 'TEXT.txt';
+const CONTENT_KEYS = [CONTENT_FILE, LEGACY_CONTENT_FILE];
+
+async function getContent(env) {
+  const [current, legacy] = await Promise.all(
+    CONTENT_KEYS.map(key => env.KV.get(key))
+  );
+
+  if (current !== null) {
+    if (legacy === null) await env.KV.put(LEGACY_CONTENT_FILE, current);
+    return current;
+  }
+
+  if (legacy !== null) {
+    await env.KV.put(CONTENT_FILE, legacy);
+    return legacy;
+  }
+
+  return '';
+}
+
+async function saveContent(env, data) {
+  await Promise.all(
+    CONTENT_KEYS.map(key => env.KV.put(key, data))
+  );
+}
 
 // ===== 工具 =====
 function uuidv4() {
@@ -44,10 +70,10 @@ export default {
           await env.KV.put('GUEST_TOKEN', custom);
           return new Response(custom);
         }
-        await env.KV.put(CONTENT_FILE, body);
+        await saveContent(env, body);
         return new Response('saved');
       }
-      const content = await env.KV.get(CONTENT_FILE) || '';
+      const content = await getContent(env);
       return new Response(adminPage(content), {
         headers: { 'Content-Type': 'text/html;charset=utf-8' }
       });
@@ -63,7 +89,7 @@ export default {
     // 访客 - 纯文本 TXT（订阅链接专用）
     if (url.pathname === '/txt' && token) {
       if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
+      const data = await getContent(env);
       return new Response(data, {
         status: 200,
         headers: {
@@ -78,7 +104,7 @@ export default {
     // 访客 - Base64 编码（部分客户端需要）
     if (url.pathname === '/sub' && token) {
       if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
+      const data = await getContent(env);
       const needBase64 = url.searchParams.get('base64') !== '0';
       const output = needBase64 ? btoa(unescape(encodeURIComponent(data))) : data;
       return new Response(output, {
@@ -96,7 +122,7 @@ export default {
     // 访客 - 原始内容下载
     if (url.pathname === '/raw' && token) {
       if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
+      const data = await getContent(env);
       return new Response(data, {
         headers: {
           'Content-Type': 'text/plain;charset=utf-8',
@@ -109,7 +135,7 @@ export default {
     // 访客 - Markdown 渲染
     if (url.pathname === '/md' && token) {
       if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
+      const data = await getContent(env);
       return new Response(viewerPageMD(data), {
         headers: { 'Content-Type': 'text/html;charset=utf-8' }
       });
