@@ -1,12 +1,13 @@
-// ========== Cloudflare Worker 完整代码 (完整版 v2) ==========
-// 包含：分享、删除、新建、友情链接等全部功能
+// ========== Cloudflare Worker 完整代码 (GitHub 管理器 v7) ==========
+// 功能：多仓库管理、文件日期显示、上传下载、删库修复、友情链接右上角
+// 作者：hc990275
+// GitHub：https://github.com/hc990275
 
 // ========== 配置区域 ==========
-const GITHUB_OWNER = "hc990275";        // 你的 GitHub 用户名
-const GITHUB_REPO  = "CF-Workers-TXT";  // 你的仓库名
-const BRANCH       = "main";
+const FALLBACK_REPOS = [
+  { owner: "hc990275", repo: "CF-Workers-TXT", branch: "main", source: "owned" }
+];
 
-// Token 权限表（在 Cloudflare 环境变量中配置更安全）
 const TOKENS = {
   "your-read-uuid-here": "read",
   "your-editor-uuid-here": "write",
@@ -17,6 +18,164 @@ const TOKENS = {
 
 function getGitHubToken(env) {
   return env.GITHUB_TOKEN || env.GITHUBWEB;
+}
+
+// 获取用户自己的仓库（包括fork）
+async function getUserRepos(env) {
+  const token = getGitHubToken(env);
+  if (!token) return [];
+  
+  try {
+    const res = await fetch("https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator", {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Cloudflare-Worker-GitHub-Manager"
+      }
+    });
+    
+    if (!res.ok) return [];
+    
+    const repos = await res.json();
+    return repos.map(r => ({
+      owner: r.owner.login,
+      repo: r.name,
+      branch: r.default_branch || "main",
+      source: r.fork ? "fork" : "owned",
+      private: r.private,
+      description: r.description,
+      fork: r.fork,
+      stars: r.stargazers_count,
+      forks: r.forks_count
+    }));
+  } catch (e) {
+    console.error("Failed to fetch user repos:", e);
+    return [];
+  }
+}
+
+// 获取用户星标的仓库
+async function getStarredRepos(env) {
+  const token = getGitHubToken(env);
+  if (!token) return [];
+  
+  try {
+    const res = await fetch("https://api.github.com/user/starred?per_page=100&sort=updated", {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Cloudflare-Worker-GitHub-Manager"
+      }
+    });
+    
+    if (!res.ok) return [];
+    
+    const repos = await res.json();
+    return repos.map(r => ({
+      owner: r.owner.login,
+      repo: r.name,
+      branch: r.default_branch || "main",
+      source: "starred",
+      private: r.private,
+      description: r.description,
+      stars: r.stargazers_count,
+      forks: r.forks_count
+    }));
+  } catch (e) {
+    console.error("Failed to fetch starred repos:", e);
+    return [];
+  }
+}
+
+// 获取所有仓库（分类返回）
+async function getAllRepos(env) {
+  const [owned, starred] = await Promise.all([
+    getUserRepos(env),
+    getStarredRepos(env)
+  ]);
+  
+  const ownedKeys = new Set(owned.map(r => `${r.owner}/${r.repo}`));
+  const filteredStarred = starred.filter(r => !ownedKeys.has(`${r.owner}/${r.repo}`));
+  
+  return {
+    owned: owned.filter(r => r.source === "owned"),
+    forked: owned.filter(r => r.source === "fork"),
+    starred: filteredStarred
+  };
+}
+
+// 搜索仓库
+async function searchRepos(env, query) {
+  const token = getGitHubToken(env);
+  if (!token || !query) return [];
+  
+  try {
+    const res = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=20&sort=stars`, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Cloudflare-Worker-GitHub-Manager"
+      }
+    });
+    
+    if (!res.ok) return [];
+    
+    const data = await res.json();
+    return data.items.map(r => ({
+      owner: r.owner.login,
+      repo: r.name,
+      branch: r.default_branch || "main",
+      description: r.description,
+      stars: r.stargazers_count,
+      forks: r.forks_count,
+      language: r.language
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+
+// Star 仓库
+async function starRepo(env, owner, repo) {
+  const token = getGitHubToken(env);
+  const res = await fetch(`https://api.github.com/user/starred/${owner}/${repo}`, {
+    method: "PUT",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "Cloudflare-Worker-GitHub-Manager",
+      "Content-Length": "0"
+    }
+  });
+  return res.status === 204;
+}
+
+// Unstar 仓库
+async function unstarRepo(env, owner, repo) {
+  const token = getGitHubToken(env);
+  const res = await fetch(`https://api.github.com/user/starred/${owner}/${repo}`, {
+    method: "DELETE",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "Cloudflare-Worker-GitHub-Manager"
+    }
+  });
+  return res.status === 204;
+}
+
+// Fork 仓库
+async function forkRepo(env, owner, repo) {
+  const token = getGitHubToken(env);
+  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/forks`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "Cloudflare-Worker-GitHub-Manager"
+    }
+  });
+  return res.json();
 }
 
 function checkAuth(request, env) {
@@ -34,6 +193,25 @@ function getFriendLinks(env) {
     }
   } catch (e) {}
   return [];
+}
+
+function getShareSecret(env) {
+  return env.SHARE_SECRET || "default-share-secret-change-me";
+}
+
+function generateShareSign(path, secret) {
+  const data = path + ":" + secret;
+  let hash = 0;
+  for (let i = 0; i < data.length; i++) {
+    const char = data.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function verifyShareSign(path, sign, secret) {
+  return generateShareSign(path, secret) === sign;
 }
 
 function corsHeaders() {
@@ -72,99 +250,221 @@ function base64ToUtf8(str) {
   return decodeURIComponent(escape(atob(str)));
 }
 
-async function githubAPI(env, path, method = "GET", body = null) {
+// GitHub API
+async function githubFetch(env, url, method = "GET", body = null) {
   const token = getGitHubToken(env);
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`;
   const headers = {
     "Authorization": `Bearer ${token}`,
     "Accept": "application/vnd.github+json",
-    "User-Agent": "Cloudflare-Worker-Editor"
+    "User-Agent": "Cloudflare-Worker-GitHub-Manager"
   };
   const options = { method, headers };
   if (body) options.body = JSON.stringify(body);
-  const res = await fetch(url, options);
+  return fetch(url, options);
+}
+
+async function githubAPI(env, owner, repo, path, method = "GET", body = null) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const res = await githubFetch(env, url, method, body);
   return res.json();
 }
 
-async function getTree(env) {
+// 获取文件树（包含日期）
+async function getTreeWithDates(env, owner, repo, branch) {
   const token = getGitHubToken(env);
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/git/trees/${BRANCH}?recursive=1`;
-  const res = await fetch(url, {
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "User-Agent": "Cloudflare-Worker-Editor"
+  
+  // 获取文件列表
+  const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  const treeRes = await githubFetch(env, treeUrl);
+  const treeData = await treeRes.json();
+  if (!treeData.tree) return [];
+  
+  const files = treeData.tree.filter(item => item.type === "blob");
+  
+  // 获取最近的提交来获取文件日期
+  const commitsUrl = `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branch}&per_page=100`;
+  const commitsRes = await githubFetch(env, commitsUrl);
+  const commits = await commitsRes.json();
+  
+  // 构建文件日期映射
+  const fileDates = {};
+  if (Array.isArray(commits)) {
+    for (const commit of commits) {
+      if (commit.files) {
+        for (const file of commit.files) {
+          if (!fileDates[file.filename]) {
+            fileDates[file.filename] = commit.commit.committer.date;
+          }
+        }
+      }
     }
-  });
+  }
+  
+  return files.map(item => ({
+    path: item.path,
+    size: item.size,
+    date: fileDates[item.path] || null
+  }));
+}
+
+// 简单获取文件树
+async function getTree(env, owner, repo, branch) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  const res = await githubFetch(env, url);
   const data = await res.json();
   if (!data.tree) return [];
-  return data.tree.filter(item => item.type === "blob").map(item => item.path);
+  return data.tree.filter(item => item.type === "blob").map(item => ({
+    path: item.path,
+    size: item.size
+  }));
 }
 
-async function getFile(env, path) {
-  const data = await githubAPI(env, path);
-  if (data.message) return { error: data.message };
+// 强制以文本方式读取任何文件（修复空文件问题）
+async function getFileAsText(env, owner, repo, branch, path) {
+  const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+  try {
+    // 添加缓存控制，避免分享文件内容不更新
+    const res = await fetch(rawUrl, {
+      headers: {
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
+      }
+    });
+    if (!res.ok) throw new Error("Not found");
+    const content = await res.text();
+    
+    const metaRes = await githubFetch(env, `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`);
+    const meta = await metaRes.json();
+    
+    // 修复：空字符串也是有效内容
+    return { content: content || '', sha: meta.sha, size: meta.size || content.length, name: path.split('/').pop() };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+// 获取文件下载URL
+function getDownloadUrl(owner, repo, branch, path) {
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+}
+
+async function saveFile(env, owner, repo, branch, path, content, sha = null) {
+  const body = {
+    message: `Update ${path} via GitHub Manager`,
+    content: utf8ToBase64(content),
+    branch: branch
+  };
+  if (sha) body.sha = sha;
+  return await githubAPI(env, owner, repo, path, "PUT", body);
+}
+
+async function deleteFile(env, owner, repo, branch, path, sha) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const res = await githubFetch(env, url, "DELETE", {
+    message: `Delete ${path} via GitHub Manager`,
+    sha: sha,
+    branch: branch
+  });
+  return res.json();
+}
+
+async function deleteDirectory(env, owner, repo, branch, dirPath) {
+  const files = await getTree(env, owner, repo, branch);
+  const filesToDelete = files.filter(f => f.path.startsWith(dirPath + '/') || f.path === dirPath);
   
-  // 修复：空文件的 content 是空字符串，不应该报错
-  // 只有 undefined 或 null 才是真正没有内容
-  if (data.content === undefined || data.content === null) {
-    return { error: "No content" };
+  if (filesToDelete.length === 0) {
+    return { error: "Directory not found or empty", count: 0 };
   }
   
-  // 解码内容（空文件返回空字符串）
-  let content = '';
-  if (data.content && data.content.length > 0) {
-    try {
-      content = base64ToUtf8(data.content);
-    } catch (e) {
-      console.error('Base64 decode error:', e);
-      content = '';
+  let count = 0;
+  for (const file of filesToDelete) {
+    const fileData = await githubAPI(env, owner, repo, file.path);
+    if (fileData.sha) {
+      await deleteFile(env, owner, repo, branch, file.path, fileData.sha);
+      count++;
     }
   }
   
-  return {
-    content: content,
-    sha: data.sha,
-    size: data.size || 0,
-    name: data.name
-  };
+  return { count };
 }
 
-async function saveFile(env, path, content, sha = null) {
-  const body = {
-    message: `Update ${path} via Cloudflare Worker`,
-    content: utf8ToBase64(content),
-    branch: BRANCH
-  };
-  if (sha) body.sha = sha;
-  return await githubAPI(env, path, "PUT", body);
-}
-
-async function deleteFile(env, path, sha) {
+// 删除仓库 - 修复版本
+async function deleteRepository(env, owner, repo) {
   const token = getGitHubToken(env);
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`;
+  const url = `https://api.github.com/repos/${owner}/${repo}`;
+  
   const res = await fetch(url, {
     method: "DELETE",
     headers: {
       "Authorization": `Bearer ${token}`,
       "Accept": "application/vnd.github+json",
-      "User-Agent": "Cloudflare-Worker-Editor"
-    },
-    body: JSON.stringify({
-      message: `Delete ${path} via Cloudflare Worker`,
-      sha: sha,
-      branch: BRANCH
-    })
+      "User-Agent": "Cloudflare-Worker-GitHub-Manager",
+      "X-GitHub-Api-Version": "2022-11-28"
+    }
+  });
+  
+  return { success: res.status === 204, status: res.status };
+}
+
+// Releases API
+async function getReleases(env, owner, repo) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/releases`;
+  const res = await githubFetch(env, url);
+  return res.json();
+}
+
+async function createRelease(env, owner, repo, tagName, name, body, draft = false, prerelease = false) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/releases`;
+  const res = await githubFetch(env, url, "POST", {
+    tag_name: tagName,
+    name: name,
+    body: body,
+    draft: draft,
+    prerelease: prerelease
   });
   return res.json();
 }
 
-// ========== 前端页面 ==========
+async function deleteRelease(env, owner, repo, releaseId) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/releases/${releaseId}`;
+  const res = await githubFetch(env, url, "DELETE");
+  return res.status === 204;
+}
+
+async function uploadReleaseAsset(env, uploadUrl, fileName, fileContent, contentType) {
+  const token = getGitHubToken(env);
+  const url = uploadUrl.replace('{?name,label}', '') + `?name=${encodeURIComponent(fileName)}`;
+  
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": contentType || "application/octet-stream",
+      "User-Agent": "Cloudflare-Worker-GitHub-Manager"
+    },
+    body: fileContent
+  });
+  return res.json();
+}
+
+// 上传文件到仓库
+async function uploadFileToRepo(env, owner, repo, branch, path, content, sha = null) {
+  const body = {
+    message: `Upload ${path} via GitHub Manager`,
+    content: content, // 已经是 base64
+    branch: branch
+  };
+  if (sha) body.sha = sha;
+  return await githubAPI(env, owner, repo, path, "PUT", body);
+}
+
+// ========== 前端 HTML ==========
 const FRONTEND_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cloudflare Workers 在线编辑器</title>
+<title>GitHub 管理器</title>
 <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
@@ -181,22 +481,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   #preview pre { background: #0f172a; padding: 1em; border-radius: 8px; overflow-x: auto; margin: 1em 0; }
   #preview pre code { background: none; padding: 0; }
   #preview ul, #preview ol { padding-left: 1.5em; margin: 0.5em 0; }
-  #preview li { margin: 0.3em 0; }
   #preview blockquote { border-left: 4px solid #3b82f6; padding-left: 1em; margin: 1em 0; color: #94a3b8; }
   #preview a { color: #60a5fa; text-decoration: underline; }
-  #preview table { border-collapse: collapse; margin: 1em 0; }
-  #preview th, #preview td { border: 1px solid #475569; padding: 8px 12px; }
-  #preview th { background: #334155; }
   .tree-item { cursor: pointer; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
   .tree-item:hover { background: #334155; }
   .tree-item.active { background: #3b82f6; color: white; }
+  .tree-folder-header { cursor: pointer; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+  .tree-folder-header:hover { background: #334155; }
+  .tree-folder-content { overflow: hidden; transition: max-height 0.3s ease; }
+  .tree-folder-content.collapsed { max-height: 0 !important; }
+  .folder-icon { transition: transform 0.2s; display: inline-block; }
+  .folder-icon.collapsed { transform: rotate(-90deg); }
   .toast { animation: slideIn 0.3s ease; }
-  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  @keyframes slideIn { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: #1e293b; }
   ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
   .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
   .modal.show { display: flex; }
+  .tab-btn { transition: all 0.2s; }
+  .tab-btn.active { background: #3b82f6; color: white; }
+  .file-date { font-size: 10px; color: #64748b; }
 </style>
 </head>
 <body class="bg-slate-900 text-slate-100 h-screen overflow-hidden">
@@ -205,8 +510,8 @@ const FRONTEND_HTML = `<!DOCTYPE html>
 <div id="authModal" class="modal show">
   <div class="bg-slate-800 rounded-2xl p-8 w-full max-w-md shadow-2xl border border-slate-700">
     <div class="text-center mb-6">
-      <div class="text-5xl mb-3">🔐</div>
-      <h2 class="text-2xl font-bold">身份验证</h2>
+      <div class="text-5xl mb-3">🐙</div>
+      <h2 class="text-2xl font-bold">GitHub 管理器</h2>
       <p class="text-slate-400 mt-2">请输入访问令牌</p>
     </div>
     <input id="tokenInput" type="password" placeholder="输入 Token..." 
@@ -219,18 +524,37 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- 搜索仓库弹窗 -->
+<div id="searchRepoModal" class="modal">
+  <div class="bg-slate-800 rounded-2xl p-6 w-full max-w-2xl shadow-2xl border border-slate-700 max-h-[80vh] flex flex-col">
+    <h3 class="text-xl font-bold mb-4">🔍 搜索仓库</h3>
+    <div class="flex gap-2 mb-4">
+      <input id="searchRepoInput" type="text" placeholder="搜索 GitHub 仓库..." 
+        class="flex-1 px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <button id="searchRepoBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg">搜索</button>
+    </div>
+    <div id="searchRepoResults" class="flex-1 overflow-y-auto space-y-2"></div>
+    <button id="searchRepoClose" class="w-full bg-slate-600 hover:bg-slate-500 py-2 rounded-lg mt-4">关闭</button>
+  </div>
+</div>
+
 <!-- 新建弹窗 -->
 <div id="createModal" class="modal">
   <div class="bg-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-slate-700">
-    <h3 class="text-xl font-bold mb-4">➕ 新建文件</h3>
+    <h3 class="text-xl font-bold mb-4">➕ 新建</h3>
     <div class="mb-4">
+      <label class="block text-sm mb-2">类型</label>
+      <div class="flex gap-2">
+        <button id="createTypeFile" class="flex-1 py-2 px-4 bg-blue-600 rounded-lg text-sm">📄 文件</button>
+        <button id="createTypeFolder" class="flex-1 py-2 px-4 bg-slate-600 rounded-lg text-sm">📁 文件夹</button>
+      </div>
+    </div>
+    <div class="mb-4" id="createDirSection">
       <label class="block text-sm mb-2">选择目录</label>
-      <select id="createDirSelect" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:outline-none">
-        <option value="">根目录</option>
-      </select>
+      <select id="createDirSelect" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"></select>
     </div>
     <div class="mb-4">
-      <label class="block text-sm mb-2">文件名</label>
+      <label class="block text-sm mb-2" id="createNameLabel">文件名</label>
       <input id="createFileName" type="text" placeholder="例如: notes.md" 
         class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
     </div>
@@ -241,54 +565,188 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- 上传弹窗 -->
+<div id="uploadModal" class="modal">
+  <div class="bg-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-slate-700">
+    <h3 class="text-xl font-bold mb-4">📤 上传文件</h3>
+    <div class="mb-4">
+      <label class="block text-sm mb-2">选择目录</label>
+      <select id="uploadDirSelect" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"></select>
+    </div>
+    <div class="mb-4">
+      <label class="block text-sm mb-2">选择文件</label>
+      <input id="uploadFileInput" type="file" multiple class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg">
+      <p class="text-xs text-slate-400 mt-1">支持多文件上传</p>
+    </div>
+    <div id="uploadProgress" class="mb-4 hidden">
+      <div class="text-sm text-slate-400 mb-1">上传进度:</div>
+      <div class="bg-slate-700 rounded-full h-2">
+        <div id="uploadProgressBar" class="bg-blue-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+      </div>
+      <div id="uploadProgressText" class="text-xs text-slate-400 mt-1">0/0</div>
+    </div>
+    <div class="flex gap-2">
+      <button id="uploadConfirm" class="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded-lg font-semibold">📤 上传</button>
+      <button id="uploadCancel" class="flex-1 bg-slate-600 hover:bg-slate-500 py-2 rounded-lg">❌ 取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除弹窗 -->
+<div id="deleteModal" class="modal">
+  <div class="bg-slate-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-slate-700 max-h-[80vh] overflow-hidden flex flex-col">
+    <h3 class="text-xl font-bold mb-4">🗑️ 删除管理</h3>
+    <div class="mb-4">
+      <div class="flex gap-2">
+        <button id="deleteTypeFile" class="flex-1 py-2 px-3 bg-blue-600 rounded-lg text-sm">📄 文件</button>
+        <button id="deleteTypeDir" class="flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm">📁 目录</button>
+        <button id="deleteTypeRepo" class="flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm">🗄️ 仓库</button>
+      </div>
+    </div>
+    <div id="deleteFileSection" class="flex-1 overflow-hidden flex flex-col">
+      <div class="flex items-center gap-2 mb-2">
+        <button id="deleteSelectAll" class="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">全选</button>
+        <button id="deleteDeselectAll" class="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">取消全选</button>
+        <span id="deleteSelectedCount" class="text-xs text-slate-400 ml-auto">已选: 0</span>
+      </div>
+      <div id="deleteFileList" class="flex-1 overflow-y-auto bg-slate-900 rounded-lg p-2 max-h-64"></div>
+    </div>
+    <div id="deleteDirSection" class="hidden">
+      <select id="deleteDirSelect" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"></select>
+      <p class="text-yellow-400 text-sm mt-2">⚠️ 将删除该目录下的所有文件</p>
+    </div>
+    <div id="deleteRepoSection" class="hidden">
+      <p class="text-red-400 text-sm mb-4">⚠️ 危险操作！此操作不可恢复！</p>
+      <p class="text-slate-300 mb-2">当前仓库: <span id="deleteRepoName" class="font-bold text-white"></span></p>
+      <p class="text-yellow-400 text-xs mb-2">注意: GitHub Token 需要有 delete_repo 权限</p>
+      <input id="deleteRepoConfirmInput" type="text" placeholder="输入仓库名确认..." 
+        class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg">
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button id="deleteConfirm" class="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded-lg font-semibold">🗑️ 确认删除</button>
+      <button id="deleteCancel" class="flex-1 bg-slate-600 hover:bg-slate-500 py-2 rounded-lg">❌ 取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- 分享弹窗 -->
 <div id="shareModal" class="modal">
   <div class="bg-slate-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-slate-700">
     <h3 class="text-xl font-bold mb-4">📤 分享文件</h3>
     <div class="mb-4">
-      <label class="block text-sm mb-2">分享链接</label>
+      <label class="block text-sm mb-2">选择文件</label>
+      <select id="shareFileSelect" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"></select>
+    </div>
+    <div class="mb-4">
       <div class="flex gap-2">
         <input id="shareUrl" type="text" readonly class="flex-1 px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-sm">
         <button id="copyShareUrl" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm">📋 复制</button>
       </div>
+      <p class="text-xs text-slate-400 mt-1">🔒 链接包含签名保护</p>
     </div>
     <div class="mb-4">
       <label class="flex items-center gap-2 cursor-pointer">
         <input id="shareBase64" type="checkbox" class="w-4 h-4">
-        <span class="text-sm">Base64 加密（适合订阅链接）</span>
+        <span class="text-sm">Base64 编码</span>
       </label>
     </div>
     <button id="shareClose" class="w-full bg-slate-600 hover:bg-slate-500 py-2 rounded-lg">关闭</button>
   </div>
 </div>
 
+<!-- Releases 弹窗 -->
+<div id="releaseModal" class="modal">
+  <div class="bg-slate-800 rounded-2xl p-6 w-full max-w-2xl shadow-2xl border border-slate-700 max-h-[90vh] flex flex-col">
+    <div class="flex items-center justify-between mb-4 shrink-0">
+      <h3 class="text-xl font-bold">🚀 发布管理</h3>
+      <button id="releaseCloseTop" class="text-slate-400 hover:text-white text-2xl leading-none px-2">&times;</button>
+    </div>
+    <div class="flex gap-2 mb-4 shrink-0">
+      <button id="tabReleases" class="tab-btn px-4 py-2 rounded-lg bg-slate-700 active">📦 版本列表</button>
+      <button id="tabNewRelease" class="tab-btn px-4 py-2 rounded-lg bg-slate-700">➕ 新建版本</button>
+    </div>
+    <div id="releasesList" class="flex-1 overflow-y-auto mb-4 min-h-0"></div>
+    <div id="newReleaseForm" class="hidden flex-1 overflow-y-auto space-y-4 min-h-0">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm mb-2">Tag *</label>
+          <input id="releaseTag" type="text" placeholder="v1.0.0" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg">
+        </div>
+        <div>
+          <label class="block text-sm mb-2">标题 *</label>
+          <input id="releaseTitle" type="text" placeholder="版本标题" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg">
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm mb-2">说明</label>
+        <textarea id="releaseBody" rows="3" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"></textarea>
+      </div>
+      <div>
+        <label class="block text-sm mb-2">📎 上传附件</label>
+        <input id="releaseFiles" type="file" multiple class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg">
+        <p class="text-xs text-slate-400 mt-1">可选择多个文件</p>
+      </div>
+      <div class="flex gap-4">
+        <label class="flex items-center gap-2"><input id="releaseDraft" type="checkbox" class="w-4 h-4"><span class="text-sm">草稿</span></label>
+        <label class="flex items-center gap-2"><input id="releasePrerelease" type="checkbox" class="w-4 h-4"><span class="text-sm">预发布</span></label>
+      </div>
+      <button id="createReleaseBtn" class="w-full bg-green-600 hover:bg-green-700 py-3 rounded-lg font-semibold">🚀 发布</button>
+    </div>
+    <button id="releaseClose" class="w-full bg-slate-600 hover:bg-slate-500 py-2 rounded-lg mt-2 shrink-0">关闭</button>
+  </div>
+</div>
+
 <!-- 主应用 -->
 <div id="app" class="flex h-full">
   <!-- 侧边栏 -->
-  <div class="w-72 bg-slate-800 border-r border-slate-700 flex flex-col">
+  <div class="w-80 bg-slate-800 border-r border-slate-700 flex flex-col">
     <div class="p-4 border-b border-slate-700">
-      <h1 class="text-lg font-bold flex items-center gap-2"><span class="text-2xl">📝</span> 在线编辑器</h1>
+      <h1 class="text-lg font-bold flex items-center gap-2"><span class="text-2xl">🐙</span> GitHub 管理器</h1>
       <div class="mt-3 flex items-center justify-between">
         <span id="roleTag" class="text-xs px-2 py-1 rounded-full bg-slate-600">未登录</span>
         <button id="logoutBtn" class="text-xs text-slate-400 hover:text-red-400 transition hidden">退出</button>
       </div>
     </div>
+    
+    <!-- 仓库选择 -->
+    <div class="p-3 border-b border-slate-700">
+      <div class="flex items-center justify-between mb-1">
+        <label class="text-xs text-slate-400">选择仓库</label>
+        <button id="searchRepoOpenBtn" class="text-xs text-blue-400 hover:text-blue-300">🔍 搜索</button>
+      </div>
+      <select id="repoSelect" class="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-sm"></select>
+      <div id="repoActions" class="flex gap-2 mt-2 hidden">
+        <button id="starRepoBtn" class="flex-1 text-xs bg-yellow-600 hover:bg-yellow-700 py-1.5 rounded">⭐ Star</button>
+        <button id="forkRepoBtn" class="flex-1 text-xs bg-purple-600 hover:bg-purple-700 py-1.5 rounded">🍴 Fork</button>
+      </div>
+    </div>
+    
     <div class="p-3">
       <input id="search" placeholder="搜索文件…" class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
     </div>
-    <div id="tree" class="flex-1 overflow-y-auto p-2">
+    <div class="px-3 flex gap-1">
+      <button id="expandAllBtn" class="flex-1 text-xs bg-slate-700 hover:bg-slate-600 py-1.5 rounded">📂 展开</button>
+      <button id="collapseAllBtn" class="flex-1 text-xs bg-slate-700 hover:bg-slate-600 py-1.5 rounded">📁 折叠</button>
+    </div>
+    <div id="tree" class="flex-1 overflow-y-auto p-2 mt-2">
       <div class="text-center text-slate-500 py-12">
         <div class="inline-block w-8 h-8 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin mb-3"></div>
         <div class="text-sm">加载中...</div>
       </div>
     </div>
     <div class="p-3 border-t border-slate-700 space-y-2">
-      <button id="createBtn" class="w-full bg-green-600 hover:bg-green-700 py-2 rounded-lg text-sm transition hidden">➕ 新建文件</button>
-      <button id="refreshBtn" class="w-full bg-slate-700 hover:bg-slate-600 py-2 rounded-lg text-sm transition">🔄 刷新列表</button>
-    </div>
-    <div id="friendLinks" class="p-3 border-t border-slate-700 hidden">
-      <div class="text-xs text-slate-400 mb-2">🔗 友情链接</div>
-      <div id="friendLinksList" class="space-y-1"></div>
+      <div class="flex gap-2">
+        <button id="createBtn" class="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded-lg text-sm transition hidden">➕ 新建</button>
+        <button id="uploadBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded-lg text-sm transition hidden">📤 上传</button>
+      </div>
+      <div class="flex gap-2">
+        <button id="deleteBtn" class="flex-1 bg-red-600 hover:bg-red-700 py-2 rounded-lg text-sm transition hidden">🗑️ 删除</button>
+        <button id="shareBtn" class="flex-1 bg-purple-600 hover:bg-purple-700 py-2 rounded-lg text-sm transition hidden">📤 分享</button>
+      </div>
+      <div class="flex gap-2">
+        <button id="releaseBtn" class="flex-1 bg-orange-600 hover:bg-orange-700 py-2 rounded-lg text-sm transition hidden">🚀 发布</button>
+        <button id="refreshBtn" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded-lg text-sm transition">🔄 刷新</button>
+      </div>
     </div>
   </div>
 
@@ -300,8 +758,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
         <span id="fileStatus" class="text-xs px-2 py-0.5 rounded-full bg-yellow-600 hidden">● 未保存</span>
       </div>
       <div class="flex items-center gap-2">
-        <button id="shareBtn" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm transition hidden">📤 分享</button>
-        <button id="deleteBtn" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded-lg text-sm transition hidden">🗑️ 删除</button>
+        <!-- 友情链接在这里 -->
+        <div id="friendLinksTop" class="flex items-center gap-2 mr-2 hidden"></div>
+        <button id="downloadBtn" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded-lg text-sm transition hidden">⬇️ 下载</button>
         <button id="previewToggle" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition hidden">👁️ 预览</button>
         <button id="saveBtn" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-semibold transition disabled:opacity-40" disabled>💾 保存</button>
       </div>
@@ -309,9 +768,9 @@ const FRONTEND_HTML = `<!DOCTYPE html>
     <div id="panes" class="flex-1 flex overflow-hidden">
       <div id="welcome" class="flex-1 flex items-center justify-center">
         <div class="text-center">
-          <div class="text-7xl mb-6">📄</div>
-          <h2 class="text-2xl font-bold mb-3">欢迎使用在线编辑器</h2>
-          <p class="text-slate-400">从左侧选择文件开始编辑</p>
+          <div class="text-7xl mb-6">🐙</div>
+          <h2 class="text-2xl font-bold mb-3">GitHub 管理器</h2>
+          <p class="text-slate-400">无需翻墙，在线管理 GitHub 仓库</p>
         </div>
       </div>
       <textarea id="editor" class="hidden flex-1 bg-slate-950 text-slate-100 p-4 resize-none focus:outline-none text-sm leading-relaxed" spellcheck="false"></textarea>
@@ -320,11 +779,27 @@ const FRONTEND_HTML = `<!DOCTYPE html>
   </div>
 </div>
 
-<div id="toasts" class="fixed top-4 right-4 space-y-2 z-50"></div>
+<!-- Toast 移到右下角 -->
+<div id="toasts" class="fixed bottom-4 right-4 space-y-2 z-50"></div>
 
 <script>
 const $ = id => document.getElementById(id);
-const state = { currentFile: null, currentSha: null, originalContent: '', userRole: null, userToken: '', fileList: [], isPreviewVisible: true };
+
+const state = { 
+  currentFile: null, 
+  currentSha: null, 
+  originalContent: '', 
+  userRole: null, 
+  userToken: '', 
+  fileList: [], 
+  allRepos: { owned: [], forked: [], starred: [] },
+  currentRepo: null,
+  isPreviewVisible: true,
+  folderStates: {},
+  deleteType: 'file',
+  selectedFiles: new Set(),
+  createType: 'file'
+};
 
 function toast(msg, type = 'info') {
   const colors = { success: 'bg-green-600', error: 'bg-red-600', info: 'bg-blue-600', warning: 'bg-yellow-600' };
@@ -337,8 +812,20 @@ function toast(msg, type = 'info') {
 
 function getFileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
-  const icons = { md: '📝', txt: '📄', json: '📋', js: '🟨', html: '🌐', css: '🎨', py: '🐍', yml: '⚙️', yaml: '⚙️' };
+  const icons = { md: '📝', txt: '📄', json: '📋', js: '🟨', html: '🌐', css: '🎨', py: '🐍', yml: '⚙️', yaml: '⚙️', ts: '🔷', go: '🔵', rs: '🦀', sh: '📜', png: '🖼️', jpg: '🖼️', gif: '🖼️', svg: '🖼️', mp4: '🎬', mp3: '🎵', zip: '📦', pdf: '📕' };
   return icons[ext] || '📄';
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
 async function api(endpoint, options = {}) {
@@ -347,62 +834,214 @@ async function api(endpoint, options = {}) {
   return fetch(endpoint, { ...options, headers });
 }
 
+async function loadRepos() {
+  try {
+    const res = await api('/api/repos');
+    state.allRepos = await res.json();
+    renderRepoSelect();
+    
+    const allRepos = [...state.allRepos.owned, ...state.allRepos.forked, ...state.allRepos.starred];
+    if (allRepos.length > 0) {
+      state.currentRepo = allRepos[0];
+      $('repoSelect').value = '0-owned';
+      loadTree();
+    }
+  } catch (e) {
+    toast('加载仓库失败', 'error');
+  }
+}
+
+function renderRepoSelect() {
+  let html = '';
+  
+  if (state.allRepos.owned.length > 0) {
+    html += '<optgroup label="📁 我的仓库">';
+    state.allRepos.owned.forEach((r, i) => {
+      html += '<option value="' + i + '-owned">' + r.owner + '/' + r.repo + '</option>';
+    });
+    html += '</optgroup>';
+  }
+  
+  if (state.allRepos.forked.length > 0) {
+    html += '<optgroup label="🍴 Fork 的仓库">';
+    state.allRepos.forked.forEach((r, i) => {
+      html += '<option value="' + i + '-forked">' + r.owner + '/' + r.repo + '</option>';
+    });
+    html += '</optgroup>';
+  }
+  
+  if (state.allRepos.starred.length > 0) {
+    html += '<optgroup label="⭐ 关注的仓库">';
+    state.allRepos.starred.forEach((r, i) => {
+      html += '<option value="' + i + '-starred">' + r.owner + '/' + r.repo + '</option>';
+    });
+    html += '</optgroup>';
+  }
+  
+  $('repoSelect').innerHTML = html;
+}
+
+$('repoSelect').addEventListener('change', () => {
+  const [idx, type] = $('repoSelect').value.split('-');
+  const repos = type === 'owned' ? state.allRepos.owned : type === 'forked' ? state.allRepos.forked : state.allRepos.starred;
+  state.currentRepo = repos[parseInt(idx)];
+  state.currentFile = null;
+  $('editor').classList.add('hidden');
+  $('welcome').classList.remove('hidden');
+  $('filepath').textContent = '未选择文件';
+  $('downloadBtn').classList.add('hidden');
+  loadTree();
+  
+  if (state.userRole && state.userRole !== 'read') {
+    $('repoActions').classList.remove('hidden');
+    $('starRepoBtn').textContent = type === 'starred' ? '⭐ Unstar' : '⭐ Star';
+  }
+});
+
+// Star/Unstar
+$('starRepoBtn').addEventListener('click', async () => {
+  if (!state.currentRepo) return;
+  const { owner, repo } = state.currentRepo;
+  const isStarred = state.currentRepo.source === 'starred';
+  
+  try {
+    const res = await api('/api/' + (isStarred ? 'unstar' : 'star') + '?owner=' + owner + '&repo=' + repo, { method: 'POST' });
+    if (res.ok) {
+      toast(isStarred ? '已取消关注' : '已关注仓库', 'success');
+      loadRepos();
+    }
+  } catch (e) {
+    toast('操作失败', 'error');
+  }
+});
+
+// Fork
+$('forkRepoBtn').addEventListener('click', async () => {
+  if (!state.currentRepo) return;
+  const { owner, repo } = state.currentRepo;
+  
+  if (!confirm('确定要 Fork 仓库 ' + owner + '/' + repo + ' 吗？')) return;
+  
+  try {
+    const res = await api('/api/fork?owner=' + owner + '&repo=' + repo, { method: 'POST' });
+    const data = await res.json();
+    if (data.id) {
+      toast('Fork 成功!', 'success');
+      loadRepos();
+    } else {
+      throw new Error(data.message || 'Fork 失败');
+    }
+  } catch (e) {
+    toast('Fork 失败: ' + e.message, 'error');
+  }
+});
+
 async function loadTree() {
+  if (!state.currentRepo) return;
   $('tree').innerHTML = '<div class="text-center py-8"><div class="inline-block w-6 h-6 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"></div></div>';
   try {
-    const res = await api('/api/tree');
+    const { owner, repo, branch } = state.currentRepo;
+    const res = await api('/api/tree?owner=' + owner + '&repo=' + repo + '&branch=' + branch);
     state.fileList = await res.json();
     renderTree(state.fileList);
-    toast('已加载 ' + state.fileList.length + ' 个文件', 'success');
+    updateDirSelect();
   } catch (e) {
     $('tree').innerHTML = '<div class="text-center text-red-400 py-8">加载失败</div>';
   }
 }
 
 function renderTree(files, filter = '') {
-  const filtered = filter ? files.filter(f => f.toLowerCase().includes(filter.toLowerCase())) : files;
-  if (!filtered.length) { $('tree').innerHTML = '<div class="text-center text-slate-500 py-8">无匹配文件</div>'; return; }
+  const filtered = filter ? files.filter(f => f.path.toLowerCase().includes(filter.toLowerCase())) : files;
+  if (!filtered.length) { $('tree').innerHTML = '<div class="text-center text-slate-500 py-8">无文件</div>'; return; }
   
   const groups = {};
   filtered.forEach(file => {
-    const parts = file.split('/');
+    const parts = file.path.split('/');
     const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '根目录';
     if (!groups[folder]) groups[folder] = [];
-    groups[folder].push({ path: file, name: parts[parts.length - 1] });
+    groups[folder].push({ ...file, name: parts[parts.length - 1] });
   });
   
   let html = '';
   Object.keys(groups).sort().forEach(folder => {
-    html += '<div class="text-slate-500 text-xs px-3 py-2 mt-2">📁 ' + folder + '</div>';
+    const isCollapsed = state.folderStates[folder] === false;
+    const folderId = 'folder-' + folder.replace(/[^a-zA-Z0-9]/g, '-');
+    
+    html += '<div class="mb-1">';
+    html += '<div class="tree-folder-header flex items-center gap-2 text-slate-300" data-folder="' + folder + '">';
+    html += '<span class="folder-icon ' + (isCollapsed ? 'collapsed' : '') + '">▼</span>';
+    html += '<span>📁</span><span class="text-sm font-medium truncate">' + folder + '</span>';
+    html += '<span class="text-xs text-slate-500 ml-auto">' + groups[folder].length + '</span>';
+    html += '</div>';
+    html += '<div id="' + folderId + '" class="tree-folder-content pl-2 ' + (isCollapsed ? 'collapsed' : '') + '" style="max-height: ' + (isCollapsed ? '0' : groups[folder].length * 50) + 'px">';
+    
     groups[folder].forEach(file => {
-      html += '<div class="tree-item flex items-center gap-2" data-path="' + file.path + '">' + getFileIcon(file.name) + ' <span class="truncate">' + file.name + '</span></div>';
+      html += '<div class="tree-item flex items-center gap-2" data-path="' + file.path + '">';
+      html += '<span>' + getFileIcon(file.name) + '</span>';
+      html += '<div class="flex-1 min-w-0">';
+      html += '<div class="truncate text-sm">' + file.name + '</div>';
+      html += '<div class="file-date">' + formatSize(file.size || 0) + '</div>';
+      html += '</div>';
+      html += '</div>';
     });
+    
+    html += '</div></div>';
   });
   
   $('tree').innerHTML = html;
-  $('tree').querySelectorAll('.tree-item').forEach(el => el.addEventListener('click', () => loadFile(el.dataset.path)));
   
-  // 更新目录选择器
-  updateDirSelect();
+  $('tree').querySelectorAll('.tree-item').forEach(el => {
+    el.addEventListener('click', () => loadFile(el.dataset.path));
+  });
+  
+  $('tree').querySelectorAll('.tree-folder-header').forEach(el => {
+    el.addEventListener('click', () => {
+      const folder = el.dataset.folder;
+      const folderId = 'folder-' + folder.replace(/[^a-zA-Z0-9]/g, '-');
+      const content = $(folderId);
+      const icon = el.querySelector('.folder-icon');
+      
+      if (content.classList.contains('collapsed')) {
+        content.classList.remove('collapsed');
+        content.style.maxHeight = content.scrollHeight + 'px';
+        icon.classList.remove('collapsed');
+        state.folderStates[folder] = true;
+      } else {
+        content.classList.add('collapsed');
+        icon.classList.add('collapsed');
+        state.folderStates[folder] = false;
+      }
+    });
+  });
 }
 
 function updateDirSelect() {
   const dirs = new Set(['']);
   state.fileList.forEach(file => {
-    const parts = file.split('/');
+    const parts = file.path.split('/');
     for (let i = 1; i < parts.length; i++) {
       dirs.add(parts.slice(0, i).join('/'));
     }
   });
-  $('createDirSelect').innerHTML = Array.from(dirs).sort().map(dir => 
+  
+  const dirOptions = Array.from(dirs).sort().map(dir => 
     '<option value="' + dir + '">' + (dir || '根目录') + '</option>'
+  ).join('');
+  
+  $('createDirSelect').innerHTML = dirOptions;
+  $('uploadDirSelect').innerHTML = dirOptions;
+  $('deleteDirSelect').innerHTML = Array.from(dirs).filter(d => d).sort().map(dir => 
+    '<option value="' + dir + '">' + dir + '</option>'
   ).join('');
 }
 
+// 打开任何文件
 async function loadFile(path) {
+  if (!state.currentRepo) return;
   $('filepath').textContent = '加载中...';
   try {
-    const res = await api('/api/file?path=' + encodeURIComponent(path));
+    const { owner, repo, branch } = state.currentRepo;
+    const res = await api('/api/file?owner=' + owner + '&repo=' + repo + '&branch=' + branch + '&path=' + encodeURIComponent(path));
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     
@@ -415,12 +1054,7 @@ async function loadFile(path) {
     $('welcome').classList.add('hidden');
     $('editor').classList.remove('hidden');
     $('fileStatus').classList.add('hidden');
-    
-    // 显示操作按钮
-    if (state.userRole && state.userRole !== 'read') {
-      $('shareBtn').classList.remove('hidden');
-      $('deleteBtn').classList.remove('hidden');
-    }
+    $('downloadBtn').classList.remove('hidden');
     
     if (path.endsWith('.md')) {
       $('previewToggle').classList.remove('hidden');
@@ -443,16 +1077,29 @@ async function loadFile(path) {
   }
 }
 
+// 下载当前文件
+$('downloadBtn').addEventListener('click', () => {
+  if (!state.currentFile || !state.currentRepo) return;
+  const { owner, repo, branch } = state.currentRepo;
+  const url = 'https://raw.githubusercontent.com/' + owner + '/' + repo + '/' + branch + '/' + state.currentFile;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = state.currentFile.split('/').pop();
+  a.click();
+  toast('开始下载...', 'info');
+});
+
 async function saveFile() {
-  if (!state.currentFile || !state.userRole || state.userRole === 'read') return;
+  if (!state.currentFile || !state.userRole || state.userRole === 'read' || !state.currentRepo) return;
   $('saveBtn').disabled = true;
   $('saveBtn').textContent = '⏳ 保存中...';
   
   try {
+    const { owner, repo, branch } = state.currentRepo;
     const res = await api('/api/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: state.currentFile, content: $('editor').value, sha: state.currentSha })
+      body: JSON.stringify({ owner, repo, branch, path: state.currentFile, content: $('editor').value, sha: state.currentSha })
     });
     if (res.status === 403) throw new Error('无权限');
     const data = await res.json();
@@ -473,61 +1120,550 @@ async function saveFile() {
   }
 }
 
-async function deleteFile() {
-  if (!state.currentFile || !state.userRole || state.userRole === 'read') return;
-  if (!confirm('确定删除 ' + state.currentFile + '？')) return;
+// 上传文件
+$('uploadBtn').addEventListener('click', () => {
+  updateDirSelect();
+  $('uploadFileInput').value = '';
+  $('uploadProgress').classList.add('hidden');
+  $('uploadModal').classList.add('show');
+});
+
+$('uploadConfirm').addEventListener('click', async () => {
+  const files = $('uploadFileInput').files;
+  if (!files.length) { toast('请选择文件', 'warning'); return; }
+  if (!state.currentRepo) return;
   
-  try {
-    const res = await api('/api/delete', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: state.currentFile, sha: state.currentSha })
+  const dir = $('uploadDirSelect').value;
+  const { owner, repo, branch } = state.currentRepo;
+  
+  $('uploadProgress').classList.remove('hidden');
+  $('uploadConfirm').disabled = true;
+  
+  let uploaded = 0;
+  for (const file of files) {
+    const path = dir ? dir + '/' + file.name : file.name;
+    
+    try {
+      const reader = new FileReader();
+      const content = await new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      
+      await api('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, repo, branch, path, content })
+      });
+      
+      uploaded++;
+      $('uploadProgressBar').style.width = (uploaded / files.length * 100) + '%';
+      $('uploadProgressText').textContent = uploaded + '/' + files.length;
+    } catch (e) {
+      toast('上传失败: ' + file.name, 'error');
+    }
+  }
+  
+  $('uploadConfirm').disabled = false;
+  toast('上传完成: ' + uploaded + ' 个文件', 'success');
+  $('uploadModal').classList.remove('show');
+  loadTree();
+});
+
+$('uploadCancel').addEventListener('click', () => $('uploadModal').classList.remove('show'));
+
+// 新建
+$('createTypeFile').addEventListener('click', () => {
+  state.createType = 'file';
+  $('createTypeFile').className = 'flex-1 py-2 px-4 bg-blue-600 rounded-lg text-sm';
+  $('createTypeFolder').className = 'flex-1 py-2 px-4 bg-slate-600 rounded-lg text-sm';
+  $('createNameLabel').textContent = '文件名';
+  $('createFileName').placeholder = '例如: notes.md';
+});
+
+$('createTypeFolder').addEventListener('click', () => {
+  state.createType = 'folder';
+  $('createTypeFile').className = 'flex-1 py-2 px-4 bg-slate-600 rounded-lg text-sm';
+  $('createTypeFolder').className = 'flex-1 py-2 px-4 bg-blue-600 rounded-lg text-sm';
+  $('createNameLabel').textContent = '文件夹名';
+  $('createFileName').placeholder = '例如: docs';
+});
+
+$('createConfirm').addEventListener('click', async () => {
+  if (!state.currentRepo) return;
+  const dir = $('createDirSelect').value;
+  const name = $('createFileName').value.trim();
+  if (!name) { toast('请输入名称', 'warning'); return; }
+  
+  const { owner, repo, branch } = state.currentRepo;
+  
+  if (state.createType === 'file') {
+    const fullPath = dir ? dir + '/' + name : name;
+    try {
+      const res = await api('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, repo, branch, path: fullPath, content: '', sha: null })
+      });
+      if (res.ok) {
+        toast('创建成功!', 'success');
+        $('createModal').classList.remove('show');
+        $('createFileName').value = '';
+        await loadTree();
+        setTimeout(() => loadFile(fullPath), 500);
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || '创建失败');
+      }
+    } catch (e) {
+      toast('创建失败: ' + e.message, 'error');
+    }
+  } else {
+    const folderPath = dir ? dir + '/' + name : name;
+    const gitkeepPath = folderPath + '/.gitkeep';
+    try {
+      const res = await api('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, repo, branch, path: gitkeepPath, content: '', sha: null })
+      });
+      if (res.ok) {
+        toast('文件夹创建成功!', 'success');
+        $('createModal').classList.remove('show');
+        $('createFileName').value = '';
+        await loadTree();
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || '创建失败');
+      }
+    } catch (e) {
+      toast('创建失败: ' + e.message, 'error');
+    }
+  }
+});
+
+$('createBtn').addEventListener('click', () => {
+  $('createFileName').value = '';
+  state.createType = 'file';
+  $('createTypeFile').className = 'flex-1 py-2 px-4 bg-blue-600 rounded-lg text-sm';
+  $('createTypeFolder').className = 'flex-1 py-2 px-4 bg-slate-600 rounded-lg text-sm';
+  $('createNameLabel').textContent = '文件名';
+  updateDirSelect();
+  $('createModal').classList.add('show');
+});
+$('createCancel').addEventListener('click', () => $('createModal').classList.remove('show'));
+
+// 删除
+function showDeleteModal() {
+  state.deleteType = 'file';
+  state.selectedFiles.clear();
+  $('deleteTypeFile').className = 'flex-1 py-2 px-3 bg-blue-600 rounded-lg text-sm';
+  $('deleteTypeDir').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteTypeRepo').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteFileSection').classList.remove('hidden');
+  $('deleteDirSection').classList.add('hidden');
+  $('deleteRepoSection').classList.add('hidden');
+  renderDeleteFileList();
+  $('deleteModal').classList.add('show');
+}
+
+function renderDeleteFileList() {
+  $('deleteFileList').innerHTML = state.fileList.map(file => 
+    '<label class="flex items-center gap-2 p-2 rounded cursor-pointer hover:bg-slate-800">' +
+      '<input type="checkbox" class="delete-file-checkbox w-4 h-4" data-path="' + file.path + '">' +
+      '<span>' + getFileIcon(file.path.split('/').pop()) + '</span>' +
+      '<span class="truncate flex-1 text-sm">' + file.path + '</span>' +
+    '</label>'
+  ).join('');
+  
+  $('deleteFileList').querySelectorAll('.delete-file-checkbox').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.selectedFiles.add(cb.dataset.path);
+      else state.selectedFiles.delete(cb.dataset.path);
+      $('deleteSelectedCount').textContent = '已选: ' + state.selectedFiles.size;
     });
-    if (res.status === 403) throw new Error('无权限');
-    const data = await res.json();
-    if (data.commit) {
-      toast('删除成功!', 'success');
+  });
+  $('deleteSelectedCount').textContent = '已选: 0';
+}
+
+$('deleteTypeFile').addEventListener('click', () => {
+  state.deleteType = 'file';
+  $('deleteTypeFile').className = 'flex-1 py-2 px-3 bg-blue-600 rounded-lg text-sm';
+  $('deleteTypeDir').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteTypeRepo').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteFileSection').classList.remove('hidden');
+  $('deleteDirSection').classList.add('hidden');
+  $('deleteRepoSection').classList.add('hidden');
+});
+
+$('deleteTypeDir').addEventListener('click', () => {
+  state.deleteType = 'dir';
+  $('deleteTypeFile').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteTypeDir').className = 'flex-1 py-2 px-3 bg-blue-600 rounded-lg text-sm';
+  $('deleteTypeRepo').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteFileSection').classList.add('hidden');
+  $('deleteDirSection').classList.remove('hidden');
+  $('deleteRepoSection').classList.add('hidden');
+});
+
+$('deleteTypeRepo').addEventListener('click', () => {
+  state.deleteType = 'repo';
+  $('deleteTypeFile').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteTypeDir').className = 'flex-1 py-2 px-3 bg-slate-600 rounded-lg text-sm';
+  $('deleteTypeRepo').className = 'flex-1 py-2 px-3 bg-red-600 rounded-lg text-sm';
+  $('deleteFileSection').classList.add('hidden');
+  $('deleteDirSection').classList.add('hidden');
+  $('deleteRepoSection').classList.remove('hidden');
+  $('deleteRepoName').textContent = state.currentRepo.owner + '/' + state.currentRepo.repo;
+  $('deleteRepoConfirmInput').value = '';
+});
+
+$('deleteSelectAll').addEventListener('click', () => {
+  $('deleteFileList').querySelectorAll('.delete-file-checkbox').forEach(cb => {
+    cb.checked = true;
+    state.selectedFiles.add(cb.dataset.path);
+  });
+  $('deleteSelectedCount').textContent = '已选: ' + state.selectedFiles.size;
+});
+
+$('deleteDeselectAll').addEventListener('click', () => {
+  $('deleteFileList').querySelectorAll('.delete-file-checkbox').forEach(cb => cb.checked = false);
+  state.selectedFiles.clear();
+  $('deleteSelectedCount').textContent = '已选: 0';
+});
+
+$('deleteConfirm').addEventListener('click', async () => {
+  if (!state.currentRepo) return;
+  const { owner, repo, branch } = state.currentRepo;
+  
+  if (state.deleteType === 'file') {
+    if (state.selectedFiles.size === 0) { toast('请选择要删除的文件', 'warning'); return; }
+    if (!confirm('确定删除选中的 ' + state.selectedFiles.size + ' 个文件？')) return;
+    
+    $('deleteConfirm').disabled = true;
+    $('deleteConfirm').textContent = '⏳ 删除中...';
+    
+    try {
+      const res = await api('/api/delete-files', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, repo, branch, files: Array.from(state.selectedFiles) })
+      });
+      const data = await res.json();
+      toast('已删除 ' + data.count + ' 个文件', 'success');
+      $('deleteModal').classList.remove('show');
       state.currentFile = null;
       $('editor').classList.add('hidden');
       $('welcome').classList.remove('hidden');
-      $('shareBtn').classList.add('hidden');
-      $('deleteBtn').classList.add('hidden');
-      $('filepath').textContent = '未选择文件';
+      $('downloadBtn').classList.add('hidden');
       loadTree();
-    } else {
-      throw new Error(data.message || '删除失败');
+    } catch (e) {
+      toast('删除失败: ' + e.message, 'error');
+    } finally {
+      $('deleteConfirm').disabled = false;
+      $('deleteConfirm').textContent = '🗑️ 确认删除';
     }
+  } else if (state.deleteType === 'dir') {
+    const dir = $('deleteDirSelect').value;
+    if (!dir) { toast('请选择目录', 'warning'); return; }
+    if (!confirm('确定删除目录 "' + dir + '" 及其所有文件？')) return;
+    
+    try {
+      const res = await api('/api/delete-dir', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, repo, branch, path: dir })
+      });
+      const data = await res.json();
+      toast('已删除 ' + data.count + ' 个文件', 'success');
+      $('deleteModal').classList.remove('show');
+      loadTree();
+    } catch (e) {
+      toast('删除失败: ' + e.message, 'error');
+    }
+  } else if (state.deleteType === 'repo') {
+    if ($('deleteRepoConfirmInput').value.trim() !== state.currentRepo.repo) {
+      toast('仓库名不匹配', 'error');
+      return;
+    }
+    if (!confirm('最后确认：真的要删除整个仓库吗？此操作不可恢复！')) return;
+    
+    $('deleteConfirm').disabled = true;
+    $('deleteConfirm').textContent = '⏳ 删除中...';
+    
+    try {
+      const res = await api('/api/delete-repo', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, repo })
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast('仓库已删除', 'success');
+        $('deleteModal').classList.remove('show');
+        loadRepos();
+      } else {
+        throw new Error(data.error || '删除失败，请确认 GitHub Token 有 delete_repo 权限');
+      }
+    } catch (e) {
+      toast('删除失败: ' + e.message, 'error');
+    } finally {
+      $('deleteConfirm').disabled = false;
+      $('deleteConfirm').textContent = '🗑️ 确认删除';
+    }
+  }
+});
+
+$('deleteBtn').addEventListener('click', showDeleteModal);
+$('deleteCancel').addEventListener('click', () => $('deleteModal').classList.remove('show'));
+
+// 搜索仓库
+$('searchRepoOpenBtn').addEventListener('click', () => {
+  $('searchRepoInput').value = '';
+  $('searchRepoResults').innerHTML = '<div class="text-center text-slate-400 py-8">输入关键词搜索 GitHub 仓库</div>';
+  $('searchRepoModal').classList.add('show');
+});
+
+$('searchRepoBtn').addEventListener('click', async () => {
+  const query = $('searchRepoInput').value.trim();
+  if (!query) return;
+  
+  $('searchRepoResults').innerHTML = '<div class="text-center py-8"><div class="inline-block w-6 h-6 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"></div></div>';
+  
+  try {
+    const res = await api('/api/search-repos?q=' + encodeURIComponent(query));
+    const repos = await res.json();
+    
+    if (!repos.length) {
+      $('searchRepoResults').innerHTML = '<div class="text-center text-slate-400 py-8">无结果</div>';
+      return;
+    }
+    
+    $('searchRepoResults').innerHTML = repos.map((r, i) => 
+      '<div class="bg-slate-700 rounded-lg p-3 flex items-center justify-between">' +
+        '<div class="flex-1 min-w-0 cursor-pointer search-repo-item" data-index="' + i + '">' +
+          '<div class="font-bold truncate">' + r.owner + '/' + r.repo + '</div>' +
+          '<div class="text-xs text-slate-400 truncate">' + (r.description || '无描述') + '</div>' +
+          '<div class="text-xs text-slate-500 mt-1">⭐ ' + r.stars + ' 🍴 ' + r.forks + (r.language ? ' 📝 ' + r.language : '') + '</div>' +
+        '</div>' +
+        '<div class="flex gap-2 ml-2">' +
+          '<button class="search-star-btn text-xs bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded" data-owner="' + r.owner + '" data-repo="' + r.repo + '" data-branch="' + r.branch + '">⭐</button>' +
+          '<button class="search-fork-btn text-xs bg-purple-600 hover:bg-purple-700 px-2 py-1 rounded" data-owner="' + r.owner + '" data-repo="' + r.repo + '">🍴</button>' +
+          '<button class="search-view-btn text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded" data-owner="' + r.owner + '" data-repo="' + r.repo + '" data-branch="' + r.branch + '">👁️</button>' +
+        '</div>' +
+      '</div>'
+    ).join('');
+    
+    // 保存搜索结果
+    window.searchResults = repos;
+    
+    // 绑定事件
+    $('searchRepoResults').querySelectorAll('.search-star-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const res = await api('/api/star?owner=' + btn.dataset.owner + '&repo=' + btn.dataset.repo, { method: 'POST' });
+        if (res.ok) {
+          toast('已关注仓库', 'success');
+          loadRepos();
+        }
+      });
+    });
+    
+    $('searchRepoResults').querySelectorAll('.search-fork-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const res = await api('/api/fork?owner=' + btn.dataset.owner + '&repo=' + btn.dataset.repo, { method: 'POST' });
+        const data = await res.json();
+        if (data.id) {
+          toast('Fork 成功!', 'success');
+          loadRepos();
+        } else {
+          toast('Fork 失败: ' + (data.message || ''), 'error');
+        }
+      });
+    });
+    
+    // 点击查看仓库
+    $('searchRepoResults').querySelectorAll('.search-view-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.currentRepo = {
+          owner: btn.dataset.owner,
+          repo: btn.dataset.repo,
+          branch: btn.dataset.branch,
+          source: 'search'
+        };
+        $('searchRepoModal').classList.remove('show');
+        loadTree();
+        toast('正在查看: ' + btn.dataset.owner + '/' + btn.dataset.repo, 'info');
+      });
+    });
   } catch (e) {
-    toast('删除失败: ' + e.message, 'error');
+    $('searchRepoResults').innerHTML = '<div class="text-center text-red-400 py-8">搜索失败</div>';
+  }
+});
+
+$('searchRepoInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('searchRepoBtn').click(); });
+$('searchRepoClose').addEventListener('click', () => $('searchRepoModal').classList.remove('show'));
+
+// 分享功能
+function showShareModal() {
+  $('shareFileSelect').innerHTML = state.fileList.map(file => 
+    '<option value="' + file.path + '">' + file.path + '</option>'
+  ).join('');
+  if (state.currentFile) $('shareFileSelect').value = state.currentFile;
+  updateShareUrl();
+  $('shareModal').classList.add('show');
+}
+
+function updateShareUrl() {
+  if (!state.currentRepo) return;
+  const file = $('shareFileSelect').value;
+  const encode = $('shareBase64').checked ? '&encode=base64' : '';
+  const { owner, repo, branch } = state.currentRepo;
+  const path = owner + '/' + repo + '/' + branch + '/' + file;
+  
+  api('/api/share-url?path=' + encodeURIComponent(path) + encode)
+    .then(res => res.json())
+    .then(data => { $('shareUrl').value = data.url; });
+}
+
+$('shareFileSelect').addEventListener('change', updateShareUrl);
+$('shareBase64').addEventListener('change', updateShareUrl);
+$('copyShareUrl').addEventListener('click', () => {
+  $('shareUrl').select();
+  document.execCommand('copy');
+  toast('链接已复制!', 'success');
+});
+$('shareBtn').addEventListener('click', showShareModal);
+$('shareClose').addEventListener('click', () => $('shareModal').classList.remove('show'));
+
+// Releases
+$('releaseBtn').addEventListener('click', () => {
+  loadReleases();
+  $('releaseModal').classList.add('show');
+});
+$('releaseClose').addEventListener('click', () => $('releaseModal').classList.remove('show'));
+$('releaseCloseTop').addEventListener('click', () => $('releaseModal').classList.remove('show'));
+
+$('tabReleases').addEventListener('click', () => {
+  $('tabReleases').classList.add('active');
+  $('tabNewRelease').classList.remove('active');
+  $('releasesList').classList.remove('hidden');
+  $('newReleaseForm').classList.add('hidden');
+});
+
+$('tabNewRelease').addEventListener('click', () => {
+  $('tabNewRelease').classList.add('active');
+  $('tabReleases').classList.remove('active');
+  $('releasesList').classList.add('hidden');
+  $('newReleaseForm').classList.remove('hidden');
+});
+
+async function loadReleases() {
+  if (!state.currentRepo) return;
+  $('releasesList').innerHTML = '<div class="text-center py-8"><div class="inline-block w-6 h-6 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"></div></div>';
+  
+  try {
+    const { owner, repo } = state.currentRepo;
+    const res = await api('/api/releases?owner=' + owner + '&repo=' + repo);
+    const releases = await res.json();
+    
+    if (!releases.length) {
+      $('releasesList').innerHTML = '<div class="text-center py-8 text-slate-400">暂无版本</div>';
+      return;
+    }
+    
+    $('releasesList').innerHTML = releases.map(r => 
+      '<div class="flex items-center justify-between bg-slate-700 rounded-lg p-3 mb-2">' +
+        '<div class="flex items-center gap-3">' +
+          '<span class="font-bold">' + r.name + '</span>' +
+          '<span class="text-xs px-2 py-0.5 rounded-full bg-blue-600">' + r.tag_name + '</span>' +
+        '</div>' +
+        '<button class="release-delete-btn text-red-400 hover:text-red-300 text-sm" data-id="' + r.id + '">🗑️</button>' +
+      '</div>'
+    ).join('');
+    
+    $('releasesList').querySelectorAll('.release-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteReleaseHandler(btn.dataset.id));
+    });
+  } catch (e) {
+    $('releasesList').innerHTML = '<div class="text-center py-8 text-red-400">加载失败</div>';
   }
 }
 
-async function createFile() {
-  const dir = $('createDirSelect').value;
-  const name = $('createFileName').value.trim();
-  if (!name) { toast('请输入文件名', 'warning'); return; }
+async function deleteReleaseHandler(id) {
+  if (!confirm('确定删除此版本？')) return;
+  if (!state.currentRepo) return;
   
-  const fullPath = dir ? dir + '/' + name : name;
   try {
-    const res = await api('/api/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: fullPath, content: '', sha: null })
-    });
+    const { owner, repo } = state.currentRepo;
+    const res = await api('/api/releases/' + id + '?owner=' + owner + '&repo=' + repo, { method: 'DELETE' });
     if (res.ok) {
-      toast('创建成功!', 'success');
-      $('createModal').classList.remove('show');
-      $('createFileName').value = '';
-      await loadTree();
-      setTimeout(() => loadFile(fullPath), 500);
-    } else {
-      const data = await res.json();
-      throw new Error(data.error || '创建失败');
+      toast('删除成功', 'success');
+      loadReleases();
     }
   } catch (e) {
-    toast('创建失败: ' + e.message, 'error');
+    toast('删除失败', 'error');
   }
 }
+
+$('createReleaseBtn').addEventListener('click', async () => {
+  if (!state.currentRepo) return;
+  const tag = $('releaseTag').value.trim();
+  const title = $('releaseTitle').value.trim();
+  const body = $('releaseBody').value;
+  const draft = $('releaseDraft').checked;
+  const prerelease = $('releasePrerelease').checked;
+  const files = $('releaseFiles').files;
+  
+  if (!tag || !title) { toast('请填写 Tag 和标题', 'warning'); return; }
+  
+  $('createReleaseBtn').disabled = true;
+  $('createReleaseBtn').textContent = '⏳ 发布中...';
+  
+  try {
+    const { owner, repo } = state.currentRepo;
+    
+    const res = await api('/api/releases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner, repo, tag_name: tag, name: title, body, draft, prerelease })
+    });
+    const release = await res.json();
+    
+    if (!release.id) throw new Error(release.message || '创建失败');
+    
+    // 上传附件
+    if (files.length > 0) {
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('owner', owner);
+        formData.append('repo', repo);
+        formData.append('release_id', release.id);
+        formData.append('upload_url', release.upload_url);
+        
+        await api('/api/upload-asset', { method: 'POST', body: formData });
+      }
+      toast('附件上传成功!', 'success');
+    }
+    
+    toast('发布成功!', 'success');
+    $('releaseTag').value = '';
+    $('releaseTitle').value = '';
+    $('releaseBody').value = '';
+    $('releaseFiles').value = '';
+    $('tabReleases').click();
+    loadReleases();
+  } catch (e) {
+    toast('发布失败: ' + e.message, 'error');
+  } finally {
+    $('createReleaseBtn').disabled = false;
+    $('createReleaseBtn').textContent = '🚀 发布';
+  }
+});
 
 function updatePreview() {
   if (state.currentFile?.endsWith('.md')) {
@@ -546,12 +1682,24 @@ function updateRoleUI() {
     $('roleTag').textContent = cfg[state.userRole][0];
     $('roleTag').className = 'text-xs px-2 py-1 rounded-full ' + cfg[state.userRole][1];
     $('logoutBtn').classList.remove('hidden');
-    if (state.userRole !== 'read') $('createBtn').classList.remove('hidden');
+    if (state.userRole !== 'read') {
+      $('createBtn').classList.remove('hidden');
+      $('uploadBtn').classList.remove('hidden');
+      $('deleteBtn').classList.remove('hidden');
+      $('shareBtn').classList.remove('hidden');
+      $('releaseBtn').classList.remove('hidden');
+      $('repoActions').classList.remove('hidden');
+    }
   } else {
     $('roleTag').textContent = '🚶 游客';
     $('roleTag').className = 'text-xs px-2 py-1 rounded-full bg-slate-600';
     $('logoutBtn').classList.add('hidden');
     $('createBtn').classList.add('hidden');
+    $('uploadBtn').classList.add('hidden');
+    $('deleteBtn').classList.add('hidden');
+    $('shareBtn').classList.add('hidden');
+    $('releaseBtn').classList.add('hidden');
+    $('repoActions').classList.add('hidden');
   }
   updateSaveBtn();
 }
@@ -572,45 +1720,15 @@ async function loadFriendLinks() {
     const res = await api('/api/friend-links');
     const links = await res.json();
     if (links && links.length > 0) {
-      $('friendLinks').classList.remove('hidden');
-      $('friendLinksList').innerHTML = links.map(link => 
-        '<a href="' + link.url + '" target="_blank" class="block text-xs text-blue-400 hover:text-blue-300 truncate">' + link.name + '</a>'
+      $('friendLinksTop').classList.remove('hidden');
+      $('friendLinksTop').innerHTML = links.map(link => 
+        '<a href="' + link.url + '" target="_blank" class="text-sm text-blue-400 hover:text-blue-300 px-2 py-1 bg-slate-700 rounded transition">' + link.name + '</a>'
       ).join('');
     }
   } catch (e) {}
 }
 
-// 分享功能
-$('shareBtn').addEventListener('click', () => {
-  if (!state.currentFile) return;
-  $('shareUrl').value = location.origin + '/share/' + encodeURIComponent(state.currentFile);
-  $('shareBase64').checked = false;
-  $('shareModal').classList.add('show');
-});
-
-$('shareBase64').addEventListener('change', () => {
-  const encode = $('shareBase64').checked ? '?encode=base64' : '';
-  $('shareUrl').value = location.origin + '/share/' + encodeURIComponent(state.currentFile) + encode;
-});
-
-$('copyShareUrl').addEventListener('click', () => {
-  $('shareUrl').select();
-  document.execCommand('copy');
-  toast('链接已复制!', 'success');
-});
-
-$('shareClose').addEventListener('click', () => $('shareModal').classList.remove('show'));
-$('deleteBtn').addEventListener('click', deleteFile);
-
-// 新建功能
-$('createBtn').addEventListener('click', () => {
-  $('createFileName').value = '';
-  $('createModal').classList.add('show');
-});
-$('createConfirm').addEventListener('click', createFile);
-$('createCancel').addEventListener('click', () => $('createModal').classList.remove('show'));
-
-// 认证
+// 事件绑定
 $('authBtn').addEventListener('click', async () => {
   const token = $('tokenInput').value.trim();
   if (!token) { $('authError').textContent = '请输入 Token'; $('authError').classList.remove('hidden'); return; }
@@ -622,7 +1740,7 @@ $('authBtn').addEventListener('click', async () => {
     localStorage.setItem('editorToken', token);
     $('authModal').classList.remove('show');
     updateRoleUI();
-    loadTree();
+    loadRepos();
     loadFriendLinks();
     toast('登录成功! 权限: ' + role, 'success');
   } else {
@@ -636,7 +1754,7 @@ $('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('aut
 $('guestBtn').addEventListener('click', () => {
   $('authModal').classList.remove('show');
   updateRoleUI();
-  loadTree();
+  loadRepos();
   loadFriendLinks();
 });
 
@@ -647,16 +1765,28 @@ $('logoutBtn').addEventListener('click', () => {
   localStorage.removeItem('editorToken');
   $('editor').classList.add('hidden');
   $('welcome').classList.remove('hidden');
-  $('shareBtn').classList.add('hidden');
-  $('deleteBtn').classList.add('hidden');
-  $('previewToggle').classList.add('hidden');
-  $('preview').classList.add('hidden');
-  $('filepath').textContent = '未选择文件';
+  $('downloadBtn').classList.add('hidden');
   $('authModal').classList.add('show');
   $('tokenInput').value = '';
-  $('authError').classList.add('hidden');
   updateRoleUI();
   toast('已退出', 'info');
+});
+
+$('expandAllBtn').addEventListener('click', () => {
+  document.querySelectorAll('.tree-folder-content').forEach(el => {
+    el.classList.remove('collapsed');
+    el.style.maxHeight = el.scrollHeight + 'px';
+  });
+  document.querySelectorAll('.folder-icon').forEach(el => el.classList.remove('collapsed'));
+  state.folderStates = {};
+});
+
+$('collapseAllBtn').addEventListener('click', () => {
+  document.querySelectorAll('.tree-folder-content').forEach(el => el.classList.add('collapsed'));
+  document.querySelectorAll('.folder-icon').forEach(el => el.classList.add('collapsed'));
+  document.querySelectorAll('.tree-folder-header').forEach(el => {
+    state.folderStates[el.dataset.folder] = false;
+  });
 });
 
 $('search').addEventListener('input', e => renderTree(state.fileList, e.target.value));
@@ -690,7 +1820,7 @@ if (saved) {
       state.userRole = role;
       $('authModal').classList.remove('show');
       updateRoleUI();
-      loadTree();
+      loadRepos();
       loadFriendLinks();
     }
   });
@@ -699,7 +1829,9 @@ if (saved) {
 </body>
 </html>`;
 
+
 // ========== 路由处理 ==========
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -714,19 +1846,121 @@ export default {
       return htmlResponse(FRONTEND_HTML);
     }
 
-    // 分享路由
+    // 分享路由（带签名保护 + 禁用缓存）
     if (path.startsWith("/share/")) {
-      const filePath = decodeURIComponent(path.substring(7));
+      const fullPath = decodeURIComponent(path.substring(7));
+      const sign = url.searchParams.get("sign");
       const encode = url.searchParams.get("encode");
+      
+      const secret = getShareSecret(env);
+      if (!sign || !verifyShareSign(fullPath, sign, secret)) {
+        return textResponse("无效的分享链接（需要签名）", 403);
+      }
+      
+      const parts = fullPath.split('/');
+      if (parts.length < 4) {
+        return textResponse("路径格式错误", 400);
+      }
+      const owner = parts[0];
+      const repo = parts[1];
+      const branch = parts[2];
+      const filePath = parts.slice(3).join('/');
+      
       try {
-        const result = await getFile(env, filePath);
-        if (result.error) return textResponse("文件不存在: " + result.error, 404);
-        let content = result.content;
+        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+        // 添加时间戳避免缓存
+        const res = await fetch(rawUrl + '?t=' + Date.now(), {
+          headers: {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache"
+          }
+        });
+        if (!res.ok) return textResponse("文件不存在", 404);
+        let content = await res.text();
         if (encode === "base64") content = utf8ToBase64(content);
-        return textResponse(content);
+        // 返回时也禁用缓存
+        return new Response(content, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            ...corsHeaders()
+          }
+        });
       } catch (e) {
         return textResponse("读取失败: " + e.message, 500);
       }
+    }
+
+    // API: 获取仓库列表
+    if (path === "/api/repos") {
+      try {
+        const repos = await getAllRepos(env);
+        return jsonResponse(repos);
+      } catch (e) {
+        return jsonResponse({ owned: FALLBACK_REPOS, forked: [], starred: [] });
+      }
+    }
+
+    // API: 搜索仓库
+    if (path === "/api/search-repos") {
+      const query = url.searchParams.get("q");
+      if (!query) return jsonResponse([]);
+      try {
+        return jsonResponse(await searchRepos(env, query));
+      } catch (e) {
+        return jsonResponse([]);
+      }
+    }
+
+    // API: Star/Unstar/Fork
+    if (path === "/api/star") {
+      const role = checkAuth(request, env);
+      if (!role || role === "read") return jsonResponse({ error: "No permission" }, 403);
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      if (!owner || !repo) return jsonResponse({ error: "Missing params" }, 400);
+      const success = await starRepo(env, owner, repo);
+      return success ? jsonResponse({ success: true }) : jsonResponse({ error: "Failed" }, 500);
+    }
+
+    if (path === "/api/unstar") {
+      const role = checkAuth(request, env);
+      if (!role || role === "read") return jsonResponse({ error: "No permission" }, 403);
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      if (!owner || !repo) return jsonResponse({ error: "Missing params" }, 400);
+      const success = await unstarRepo(env, owner, repo);
+      return success ? jsonResponse({ success: true }) : jsonResponse({ error: "Failed" }, 500);
+    }
+
+    if (path === "/api/fork") {
+      const role = checkAuth(request, env);
+      if (!role || role === "read") return jsonResponse({ error: "No permission" }, 403);
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      if (!owner || !repo) return jsonResponse({ error: "Missing params" }, 400);
+      try {
+        return jsonResponse(await forkRepo(env, owner, repo));
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // API: 生成分享链接
+    if (path === "/api/share-url") {
+      const filePath = url.searchParams.get("path");
+      const encode = url.searchParams.get("encode");
+      if (!filePath) return jsonResponse({ error: "Missing path" }, 400);
+      
+      const secret = getShareSecret(env);
+      const sign = generateShareSign(filePath, secret);
+      let shareUrl = url.origin + '/share/' + encodeURIComponent(filePath) + '?sign=' + sign;
+      if (encode) shareUrl += '&encode=' + encode;
+      
+      return jsonResponse({ url: shareUrl, sign });
     }
 
     // API: 验证 Token
@@ -743,8 +1977,13 @@ export default {
 
     // API: 文件树
     if (path === "/api/tree") {
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      const branch = url.searchParams.get("branch") || "main";
+      if (!owner || !repo) return jsonResponse({ error: "Missing params" }, 400);
+      
       try {
-        return jsonResponse(await getTree(env));
+        return jsonResponse(await getTree(env, owner, repo, branch));
       } catch (e) {
         return jsonResponse({ error: e.message }, 500);
       }
@@ -752,10 +1991,14 @@ export default {
 
     // API: 获取文件
     if (path === "/api/file") {
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      const branch = url.searchParams.get("branch") || "main";
       const filePath = url.searchParams.get("path");
-      if (!filePath) return jsonResponse({ error: "Missing path" }, 400);
+      if (!owner || !repo || !filePath) return jsonResponse({ error: "Missing params" }, 400);
+      
       try {
-        const result = await getFile(env, filePath);
+        const result = await getFileAsText(env, owner, repo, branch, filePath);
         if (result.error) return jsonResponse({ error: result.error }, 404);
         return jsonResponse(result);
       } catch (e) {
@@ -767,13 +2010,34 @@ export default {
     if (path === "/api/save") {
       const role = checkAuth(request, env);
       if (!role) return jsonResponse({ error: "Unauthorized" }, 401);
-      if (role === "read") return jsonResponse({ error: "No write permission" }, 403);
+      if (role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
       try {
         const body = await request.json();
-        const { path: filePath, content, sha } = body;
-        if (!filePath || content === undefined) return jsonResponse({ error: "Missing path or content" }, 400);
-        const result = await saveFile(env, filePath, content, sha);
-        if (result.message?.includes("sha")) return jsonResponse({ error: "File modified, please refresh" }, 409);
+        const { owner, repo, branch, path: filePath, content, sha } = body;
+        if (!owner || !repo || !filePath || content === undefined) {
+          return jsonResponse({ error: "Missing params" }, 400);
+        }
+        const result = await saveFile(env, owner, repo, branch || "main", filePath, content, sha);
+        return jsonResponse(result);
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // API: 上传文件
+    if (path === "/api/upload") {
+      const role = checkAuth(request, env);
+      if (!role) return jsonResponse({ error: "Unauthorized" }, 401);
+      if (role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
+      try {
+        const body = await request.json();
+        const { owner, repo, branch, path: filePath, content } = body;
+        if (!owner || !repo || !filePath || !content) {
+          return jsonResponse({ error: "Missing params" }, 400);
+        }
+        const result = await uploadFileToRepo(env, owner, repo, branch || "main", filePath, content);
         return jsonResponse(result);
       } catch (e) {
         return jsonResponse({ error: e.message }, 500);
@@ -781,27 +2045,117 @@ export default {
     }
 
     // API: 删除文件
-    if (path === "/api/delete") {
+    if (path === "/api/delete-files") {
       const role = checkAuth(request, env);
       if (!role) return jsonResponse({ error: "Unauthorized" }, 401);
-      if (role === "read") return jsonResponse({ error: "No delete permission" }, 403);
+      if (role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
       try {
         const body = await request.json();
-        const { path: filePath, sha } = body;
-        if (!filePath || !sha) return jsonResponse({ error: "Missing path or sha" }, 400);
-        return jsonResponse(await deleteFile(env, filePath, sha));
+        const { owner, repo, branch, files } = body;
+        if (!files || !files.length) return jsonResponse({ error: "No files" }, 400);
+        
+        let count = 0;
+        for (const filePath of files) {
+          const fileData = await githubAPI(env, owner, repo, filePath);
+          if (fileData.sha) {
+            await deleteFile(env, owner, repo, branch || "main", filePath, fileData.sha);
+            count++;
+          }
+        }
+        return jsonResponse({ count });
       } catch (e) {
         return jsonResponse({ error: e.message }, 500);
       }
     }
 
-    // API: 文件元信息
-    if (path === "/api/meta") {
-      const filePath = url.searchParams.get("path");
-      if (!filePath) return jsonResponse({ error: "Missing path" }, 400);
+    // API: 删除目录
+    if (path === "/api/delete-dir") {
+      const role = checkAuth(request, env);
+      if (!role) return jsonResponse({ error: "Unauthorized" }, 401);
+      if (role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
       try {
-        const data = await githubAPI(env, filePath);
-        return jsonResponse({ sha: data.sha, size: data.size, name: data.name });
+        const body = await request.json();
+        const { owner, repo, branch, path: dirPath } = body;
+        return jsonResponse(await deleteDirectory(env, owner, repo, branch || "main", dirPath));
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // API: 删除仓库
+    if (path === "/api/delete-repo") {
+      const role = checkAuth(request, env);
+      if (role !== "admin") return jsonResponse({ error: "需要管理员权限" }, 403);
+      
+      try {
+        const body = await request.json();
+        const { owner, repo } = body;
+        const result = await deleteRepository(env, owner, repo);
+        return jsonResponse(result);
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // API: Releases
+    if (path === "/api/releases" && request.method === "GET") {
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      if (!owner || !repo) return jsonResponse({ error: "Missing params" }, 400);
+      
+      try {
+        return jsonResponse(await getReleases(env, owner, repo));
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    if (path === "/api/releases" && request.method === "POST") {
+      const role = checkAuth(request, env);
+      if (!role || role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
+      try {
+        const body = await request.json();
+        const { owner, repo, tag_name, name, body: releaseBody, draft, prerelease } = body;
+        return jsonResponse(await createRelease(env, owner, repo, tag_name, name, releaseBody || '', draft, prerelease));
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    if (path.startsWith("/api/releases/") && request.method === "DELETE") {
+      const role = checkAuth(request, env);
+      if (!role || role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
+      const owner = url.searchParams.get("owner");
+      const repo = url.searchParams.get("repo");
+      const releaseId = path.split("/").pop();
+      
+      try {
+        const success = await deleteRelease(env, owner, repo, releaseId);
+        return success ? jsonResponse({ success: true }) : jsonResponse({ error: "Failed" }, 500);
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // API: 上传 Release 附件
+    if (path === "/api/upload-asset" && request.method === "POST") {
+      const role = checkAuth(request, env);
+      if (!role || role === "read") return jsonResponse({ error: "No permission" }, 403);
+      
+      try {
+        const formData = await request.formData();
+        const file = formData.get("file");
+        const uploadUrl = formData.get("upload_url");
+        
+        if (!file || !uploadUrl) return jsonResponse({ error: "Missing file or upload_url" }, 400);
+        
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await uploadReleaseAsset(env, uploadUrl, file.name, arrayBuffer, file.type);
+        return jsonResponse(result);
       } catch (e) {
         return jsonResponse({ error: e.message }, 500);
       }
