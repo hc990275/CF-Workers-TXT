@@ -77,11 +77,13 @@ export default {
       });
     }
 
-    // 访客 - 纯文本 TXT（订阅链接专用）
+    // 访客 - 纯文本 TXT（支持 base64 编码）
     if (url.pathname === '/txt' && token) {
       if (!await checkToken()) return new Response('Token invalid', { status: 403 });
       const data = await env.KV.get(CONTENT_FILE) || '';
-      return new Response(data, {
+      const needBase64 = url.searchParams.get('base64') === '1';
+      const output = needBase64 ? btoa(unescape(encodeURIComponent(data))) : data;
+      return new Response(output, {
         status: 200,
         headers: {
           'Content-Type': 'text/plain;charset=utf-8',
@@ -157,7 +159,7 @@ body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;
 .header-links { display:flex; align-items:center; gap:14px; }
 .header a { color:#fff; text-decoration:none; display:inline-flex; align-items:center; gap:4px; opacity:0.85; }
 .header a:hover { opacity:1; }
-.toolbar { padding:10px 20px; background:#fff; border-bottom:1px solid #d0d7de; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.toolbar { padding:10px 20px; background:#fff; border-bottom:1px solid #d0d7de; display:flex; align-items:center; gap:10px; flex-wrap:wrap; position:relative; }
 .toolbar button { padding:5px 12px; border:1px solid #d0d7de; border-radius:6px; background:#f6f8fa; cursor:pointer; font-size:13px; }
 .toolbar button:hover { background:#e8ebef; }
 .toolbar button.primary { background:#238636; color:#fff; border-color:#238636; }
@@ -175,7 +177,7 @@ body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;
 .markdown-body { padding:20px 32px; max-width:980px; margin:0 auto; }
 .markdown-body img { max-width:100%; }
 
-#share { width:100%; padding:12px 20px; border-top:1px solid #d0d7de; background:#fff; display:flex; flex-direction:column; gap:10px; }
+#share { position:fixed; top:70px; right:16px; width:360px; max-height:calc(100vh - 86px); overflow:auto; padding:12px 16px 16px; border:1px solid #d0d7de; border-radius:10px; background:#fff; display:flex; flex-direction:column; gap:10px; box-shadow:0 10px 30px rgba(0,0,0,0.12); z-index:20; }
 #share.hidden { display:none; }
 #share strong { font-size:14px; }
 #share input[type="text"] { width:100%; padding:6px 10px; border:1px solid #d0d7de; border-radius:6px; font-family:monospace; font-size:13px; }
@@ -196,6 +198,7 @@ body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;
   .editor-pane, .preview-pane { height:50vh; border-right:none; border-bottom:1px solid #d0d7de; }
   .tabs button { padding:6px 10px; font-size:12px; }
   #qrSection { flex-direction:column; align-items:center; }
+  #share { position:fixed; top:60px; right:10px; width:calc(100% - 20px); }
 }
 </style>
 </head>
@@ -221,8 +224,10 @@ body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;
     <button id="tabPreview" onclick="switchTab('preview')">👁️ 预览MD</button>
     <button id="tabBoth" onclick="switchTab('both')">⚡ 分栏</button>
   </div>
-  <button class="primary" onclick="save()">💾 保存</button>
-  <button onclick="toggleShare()">🔗 分享设置</button>
+  <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+    <button class="primary" onclick="save()">💾 保存</button>
+    <button onclick="toggleShare()">🔗 分享设置</button>
+  </div>
   <span id="status"></span>
 </div>
 
@@ -270,11 +275,15 @@ body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto;
     </div>
 
     <div class="link-group">
-      <label>📄 纯文本地址（不编码）：</label>
-      <div class="desc">原样输出，适用于部分特殊客户端</div>
+      <label>📄 纯文本地址：</label>
+      <div class="desc">默认原样输出，base64=1 可返回 Base64 编码</div>
       <div class="link-row">
         <input type="text" id="txtUrl" readonly onclick="this.select()">
         <button onclick="copyUrl('txtUrl')">复制</button>
+      </div>
+      <div class="link-row" style="margin-top:6px;">
+        <input type="text" id="txtB64Url" readonly onclick="this.select()">
+        <button onclick="copyUrl('txtB64Url')">复制 Base64</button>
       </div>
     </div>
 
@@ -407,14 +416,16 @@ function gen() {
       const clashUrl = basePath + '/clash?token=' + t;
       const tvboxUrl = basePath + '/tvbox?token=' + t;
       const txtUrl = basePath + '/txt?token=' + t;
+      const txtB64Url = basePath + '/txt?token=' + t + '&base64=1';
       const mdUrl = basePath + '/md?token=' + t;
       const rawUrl = basePath + '/raw?token=' + t;
-      
+
       document.getElementById('subUrl').value = subUrl;
       document.getElementById('v2Url').value = v2Url;
       document.getElementById('clashUrl').value = clashUrl;
       document.getElementById('tvboxUrl').value = tvboxUrl;
       document.getElementById('txtUrl').value = txtUrl;
+      document.getElementById('txtB64Url').value = txtB64Url;
       document.getElementById('mdUrl').value = mdUrl;
       document.getElementById('rawUrl').value = rawUrl;
       document.getElementById('linkSection').style.display = 'block';
