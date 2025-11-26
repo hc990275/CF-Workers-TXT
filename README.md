@@ -1,6 +1,3 @@
-# 📘 README.md（完整可用）
-
-```markdown
 # Cloudflare Workers 在线文件编辑器  
 基于 **Cloudflare Workers + GitHub Raw** 的在线记事本 / 文件编辑器。  
 支持在线浏览、编辑、保存 GitHub 里的文件，并提供 Markdown 预览、树形目录、Token 权限控制等功能。
@@ -191,6 +188,3 @@ Worker 会自动读取并生成树形目录。
 ---
 
 ## 📧 联系作者
-
-如需增强（分享链接、二级密码、版本历史、WebDAV 适配等），可通过 GitHub Issues 提交需求。
-```
