@@ -1,18 +1,3 @@
-下面为你生成 **专业级 GitHub 使用说明书（README.md）**，完全按照 GitHub 项目最佳实践撰写，包含：
-
-* 功能说明
-* 安装部署
-* 使用方式
-* 示例截图（可替换）
-* API 文档
-* Token 权限说明
-* 访客访问方式
-* 高级功能
-
-你可以直接复制整份 README.md 到 GitHub 仓库根目录即可。
-
----
-
 # 📄 **README.md（完整成品，可直接发布到 GitHub）**
 
 ````markdown
@@ -318,9 +303,3 @@ MIT License
 * `CONTRIBUTING.md`
 * `CHANGELOG.md`
 * GitHub 仓库推荐设置
-
-直接告诉我即可。
-
----
-
-如需增强、性能优化或自动构建脚本，也可以继续告诉我。
