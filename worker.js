@@ -1,504 +1,685 @@
-// ============= 在线文本/Markdown 管理器 =============
-// 管理员： https://<worker域名>/<ADMIN_UUID>
-// 访客TXT： https://<worker域名>/txt?token=<Token>
-// 访客MD：  https://<worker域名>/md?token=<Token>
-// 原始内容：https://<worker域名>/raw?token=<Token>
+// ========== Cloudflare Worker 完整代码 ==========
 
-// ===== 默认配置 =====
-let ADMIN_UUID = null;
-let FileName = 'CF-Workers-TEXT';
+/*
+╔══════════════════════════════════════════════════════════════╗
+║                    🚀 部署步骤                                ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  1️⃣  登录 Cloudflare Dashboard                               ║
+║      https://dash.cloudflare.com                             ║
+║                                                              ║
+║  2️⃣  进入 Workers & Pages → Create → Create Worker           ║
+║                                                              ║
+║  3️⃣  给 Worker 起个名字，如: my-editor                        ║
+║                                                              ║
+║  4️⃣  点击 "Edit code"，删除默认代码                           ║
+║      把这个文件的全部内容粘贴进去                              ║
+║                                                              ║
+║  5️⃣  点击右上角 "Deploy"                                     ║
+║                                                              ║
+║  6️⃣  配置环境变量:                                           ║
+║      Settings → Variables and Secrets → Add                 ║
+║                                                              ║
+║      ┌─────────────────┬──────────────────────────────────┐ ║
+║      │ 变量名           │ 值                               │ ║
+║      ├─────────────────┼──────────────────────────────────┤ ║
+║      │ GITHUB_TOKEN    │ ghp_xxxx (你的 GitHub Token)     │ ║
+║      │ TOKEN_ADMIN     │ your-admin-uuid                  │ ║
+║      │ TOKEN_EDITOR    │ your-editor-uuid                 │ ║
+║      │ TOKEN_READ      │ your-read-uuid                   │ ║
+║      └─────────────────┴──────────────────────────────────┘ ║
+║                                                              ║
+║  7️⃣  访问你的 Worker URL:                                    ║
+║      https://my-editor.your-account.workers.dev             ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                    📝 GitHub Token 获取                       ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  1. 打开 https://github.com/settings/tokens                 ║
+║  2. Generate new token (classic)                            ║
+║  3. 勾选 "repo" 权限                                         ║
+║  4. 复制生成的 Token                                         ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                    🔧 修改配置                                ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  修改文件顶部的配置:                                          ║
+║                                                              ║
+║  const GITHUB_OWNER = "你的用户名";                           ║
+║  const GITHUB_REPO  = "你的仓库名";                           ║
+║  const BRANCH       = "main";                                ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+*/
 
-const CONTENT_FILE = 'CONTENT.txt';
 
-// ===== 工具 =====
-function uuidv4() {
-  return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
-    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-  );
-}
+// ========== 配置区域 ==========
+const GITHUB_OWNER = "hc990275";        // 你的 GitHub 用户名
+const GITHUB_REPO  = "CF-Workers-TXT";  // 你的仓库名
+const BRANCH       = "main";
 
-// ===== 主入口 =====
-export default {
-  async fetch(request, env) {
-    ADMIN_UUID = env.ADMIN_UUID || ADMIN_UUID;
-    FileName = env.FILENAME || FileName;
-
-    const url = new URL(request.url);
-    const pathname = url.pathname.slice(1);
-    const token = url.searchParams.get('token');
-
-    // 未设置 ADMIN_UUID
-    if (!ADMIN_UUID) {
-      return new Response(
-        `<!doctype html><meta charset="utf-8"><h1>⚠️ 请先设置环境变量 ADMIN_UUID</h1>`,
-        { status: 400, headers: { 'Content-Type': 'text/html;charset=utf-8' } }
-      );
-    }
-
-    // 管理员页面
-    if (pathname === ADMIN_UUID) {
-      if (request.method === 'POST') {
-        const body = await request.text();
-        if (body.startsWith('GUESTGEN|')) {
-          const custom = body.split('|')[1] || uuidv4();
-          await env.KV.put('GUEST_TOKEN', custom);
-          return new Response(custom);
-        }
-        await env.KV.put(CONTENT_FILE, body);
-        return new Response('saved');
-      }
-      const content = await env.KV.get(CONTENT_FILE) || '';
-      return new Response(adminPage(content), {
-        headers: { 'Content-Type': 'text/html;charset=utf-8' }
-      });
-    }
-
-    // 验证 Token
-    async function checkToken() {
-      if (!token) return false;
-      const saved = await env.KV.get('GUEST_TOKEN');
-      return token === saved;
-    }
-
-    async function subscriptionResponse(base64Default = true) {
-      if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
-      const needBase64 = base64Default ? url.searchParams.get('base64') !== '0' : url.searchParams.get('base64') === '1';
-      const output = needBase64 ? btoa(unescape(encodeURIComponent(data))) : data;
-      return new Response(output, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Profile-Update-Interval': '24',
-          'Subscription-Userinfo': `upload=0; download=0; total=10737418240; expire=${Math.floor(Date.now() / 1000) + 31536000}`
-        }
-      });
-    }
-
-    // 访客 - 纯文本 TXT（支持 base64 编码）
-    if (url.pathname === '/txt' && token) {
-      if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
-      const needBase64 = url.searchParams.get('base64') === '1';
-      const output = needBase64 ? btoa(unescape(encodeURIComponent(data))) : data;
-      return new Response(output, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Subscription-Userinfo': `upload=0; download=0; total=10737418240; expire=${Math.floor(Date.now() / 1000) + 31536000}`
-        }
-      });
-    }
-
-    // 访客 - Base64 编码（部分客户端需要）
-    if (url.pathname === '/sub' && token) {
-      return subscriptionResponse(true);
-    }
-
-    // 访客 - v2ray/Clash 订阅（同样支持 base64 参数，默认开启）
-    if ((url.pathname === '/v2' || url.pathname === '/clash') && token) {
-      return subscriptionResponse(true);
-    }
-
-    // 访客 - TVBox 订阅（默认不进行 base64，可通过 base64=1 开启）
-    if (url.pathname === '/tvbox' && token) {
-      return subscriptionResponse(false);
-    }
-
-    // 访客 - 原始内容下载
-    if (url.pathname === '/raw' && token) {
-      if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
-      return new Response(data, {
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-          'Content-Disposition': 'attachment; filename="config.txt"',
-          'Access-Control-Allow-Origin': '*'
-        }
-      });
-    }
-
-    // 访客 - Markdown 渲染
-    if (url.pathname === '/md' && token) {
-      if (!await checkToken()) return new Response('Token invalid', { status: 403 });
-      const data = await env.KV.get(CONTENT_FILE) || '';
-      return new Response(viewerPageMD(data), {
-        headers: { 'Content-Type': 'text/html;charset=utf-8' }
-      });
-    }
-
-    return new Response('Not Found', { status: 404 });
-  }
+// Token 权限表（在 Cloudflare 环境变量中配置更安全）
+const TOKENS = {
+  "your-read-uuid-here": "read",      // 只读权限
+  "your-editor-uuid-here": "write",   // 编辑权限
+  "your-admin-uuid-here": "admin"     // 管理员权限
 };
 
-// ===== 管理页 HTML =====
-function adminPage(content) {
-  const escaped = content
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+// ========== 工具函数 ==========
 
-  return `<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>${FileName} 管理器</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.5.1/github-markdown-light.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
-<style>
-* { box-sizing: border-box; }
-body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto; font-size:14px; background:#f6f8fa; color:#24292f; }
-.header { padding:12px 20px; background:#24292f; color:#fff; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
-.header h1 { margin:0; font-size:18px; font-weight:600; }
-.header-links { display:flex; align-items:center; gap:14px; }
-.header a { color:#fff; text-decoration:none; display:inline-flex; align-items:center; gap:4px; opacity:0.85; }
-.header a:hover { opacity:1; }
-.toolbar { padding:10px 20px; background:#fff; border-bottom:1px solid #d0d7de; display:flex; align-items:center; gap:10px; flex-wrap:wrap; position:relative; }
-.toolbar button { padding:5px 12px; border:1px solid #d0d7de; border-radius:6px; background:#f6f8fa; cursor:pointer; font-size:13px; }
-.toolbar button:hover { background:#e8ebef; }
-.toolbar button.primary { background:#238636; color:#fff; border-color:#238636; }
-.toolbar button.primary:hover { background:#2ea043; }
-.tabs { display:flex; gap:0; }
-.tabs button { border-radius:6px 6px 0 0; border-bottom:none; margin-bottom:-1px; padding:6px 16px; }
-.tabs button.active { background:#fff; border-bottom:1px solid #fff; font-weight:600; }
-#status { margin-left:10px; color:#57606a; font-size:12px; }
-.container { display:flex; height:calc(100vh - 140px); }
-.editor-pane, .preview-pane { flex:1; overflow:auto; }
-.editor-pane { border-right:1px solid #d0d7de; display:flex; flex-direction:column; }
-.editor-pane.hidden, .preview-pane.hidden { display:none; }
-#editor { flex:1; width:100%; border:none; padding:16px 20px; resize:none; font-family:"SF Mono",Consolas,"Liberation Mono",Menlo,monospace; font-size:14px; line-height:1.6; background:#fff; outline:none; }
-.preview-pane { background:#fff; }
-.markdown-body { padding:20px 32px; max-width:980px; margin:0 auto; }
-.markdown-body img { max-width:100%; }
-
-#share { position:fixed; top:70px; right:16px; width:360px; max-height:calc(100vh - 86px); overflow:auto; padding:12px 16px 16px; border:1px solid #d0d7de; border-radius:10px; background:#fff; display:flex; flex-direction:column; gap:10px; box-shadow:0 10px 30px rgba(0,0,0,0.12); z-index:20; }
-#share.hidden { display:none; }
-#share strong { font-size:14px; }
-#share input[type="text"] { width:100%; padding:6px 10px; border:1px solid #d0d7de; border-radius:6px; font-family:monospace; font-size:13px; }
-#share button { padding:4px 10px; font-size:12px; white-space:nowrap; }
-#share .share-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-#linkSection { padding-top:4px; border-top:1px solid #d0d7de; }
-.link-group { margin-bottom:12px; }
-.link-group label { display:block; font-size:12px; color:#57606a; margin-bottom:4px; font-weight:500; }
-.link-group .desc { font-size:11px; color:#8b949e; margin-bottom:4px; }
-.link-group .link-row { display:flex; gap:6px; align-items:center; }
-.link-group input { flex:1; }
-#qrSection { margin-top:10px; display:flex; gap:20px; flex-wrap:wrap; }
-.qr-box { text-align:center; }
-.qr-box p { margin:0 0 6px; font-size:12px; color:#57606a; }
-
-@media (max-width: 768px) {
-  .container { flex-direction:column; height:auto; }
-  .editor-pane, .preview-pane { height:50vh; border-right:none; border-bottom:1px solid #d0d7de; }
-  .tabs button { padding:6px 10px; font-size:12px; }
-  #qrSection { flex-direction:column; align-items:center; }
-  #share { position:fixed; top:60px; right:10px; width:calc(100% - 20px); }
+// 获取 GitHub Token（从环境变量）
+function getGitHubToken(env) {
+  return env.GITHUB_TOKEN || env.GITHUBWEB;
 }
-</style>
-</head>
-<body>
 
-<div class="header">
-  <h1>📝 ${FileName}</h1>
-  <div class="header-links">
-    <a href="https://www.youtube.com/@%E5%A5%BD%E8%BD%AF%E6%8E%A8%E8%8D%90" target="_blank">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="#ff0000"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.546 12 3.546 12 3.546s-7.505 0-9.377.504A3.016 3.016 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.504 9.376.504 9.376.504s7.505 0 9.377-.504a3.016 3.016 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12 9.545 15.568z"/></svg>
-      好软推荐
-    </a>
-    <a href="https://github.com/ethgan/Online-Text-Edit" target="_blank">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.085 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-      GitHub
-    </a>
-  </div>
-</div>
-
-<div class="toolbar">
-  <div class="tabs">
-    <button id="tabEdit" class="active" onclick="switchTab('edit')">✏️ 编辑</button>
-    <button id="tabPreview" onclick="switchTab('preview')">👁️ 预览MD</button>
-    <button id="tabBoth" onclick="switchTab('both')">⚡ 分栏</button>
-  </div>
-  <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
-    <button class="primary" onclick="save()">💾 保存</button>
-    <button onclick="toggleShare()">🔗 分享设置</button>
-  </div>
-  <span id="status"></span>
-</div>
-
-<div id="share" class="hidden">
-  <div class="share-row">
-    <strong>🔐 访客 Token 设置</strong>
-    <input type="text" id="customToken" placeholder="自定义 Token（留空随机生成）">
-    <button onclick="gen()">生成 / 更新 Token</button>
-  </div>
-  <div id="linkSection" style="display:none">
-    <div class="link-group">
-      <label>🔗 订阅地址（Base64 编码，推荐）：</label>
-      <div class="desc">适用于 v2rayN、Clash、Shadowrocket 等大多数客户端</div>
-      <div class="link-row">
-        <input type="text" id="subUrl" readonly onclick="this.select()">
-        <button onclick="copyUrl('subUrl')">复制</button>
-      </div>
-    </div>
-
-    <div class="link-group">
-      <label>🚀 V2Ray 订阅：</label>
-      <div class="desc">同默认订阅，路径 /v2</div>
-      <div class="link-row">
-        <input type="text" id="v2Url" readonly onclick="this.select()">
-        <button onclick="copyUrl('v2Url')">复制</button>
-      </div>
-    </div>
-
-    <div class="link-group">
-      <label>🧩 Clash 订阅：</label>
-      <div class="desc">同默认订阅，路径 /clash</div>
-      <div class="link-row">
-        <input type="text" id="clashUrl" readonly onclick="this.select()">
-        <button onclick="copyUrl('clashUrl')">复制</button>
-      </div>
-    </div>
-
-    <div class="link-group">
-      <label>📺 TVBox 订阅：</label>
-      <div class="desc">默认不编码，如需 Base64 请添加 base64=1</div>
-      <div class="link-row">
-        <input type="text" id="tvboxUrl" readonly onclick="this.select()">
-        <button onclick="copyUrl('tvboxUrl')">复制</button>
-      </div>
-    </div>
-
-    <div class="link-group">
-      <label>📄 纯文本地址：</label>
-      <div class="desc">默认原样输出，base64=1 可返回 Base64 编码</div>
-      <div class="link-row">
-        <input type="text" id="txtUrl" readonly onclick="this.select()">
-        <button onclick="copyUrl('txtUrl')">复制</button>
-      </div>
-      <div class="link-row" style="margin-top:6px;">
-        <input type="text" id="txtB64Url" readonly onclick="this.select()">
-        <button onclick="copyUrl('txtB64Url')">复制 Base64</button>
-      </div>
-    </div>
-
-    <div class="link-group">
-      <label>📘 Markdown 渲染页：</label>
-      <div class="desc">网页形式展示，适合文档/笔记分享</div>
-      <div class="link-row">
-        <input type="text" id="mdUrl" readonly onclick="this.select()">
-        <button onclick="copyUrl('mdUrl')">复制</button>
-      </div>
-    </div>
-
-    <div class="link-group">
-      <label>⬇️ 下载原始文件：</label>
-      <div class="link-row">
-        <input type="text" id="rawUrl" readonly onclick="this.select()">
-        <button onclick="copyUrl('rawUrl')">复制</button>
-      </div>
-    </div>
-
-    <div id="qrSection">
-      <div class="qr-box">
-        <p>订阅二维码</p>
-        <div id="qrSub"></div>
-      </div>
-      <div class="qr-box">
-        <p>MD 页面二维码</p>
-        <div id="qrMd"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="container" id="container">
-  <div class="editor-pane" id="editorPane">
-    <textarea id="editor" placeholder="在这里输入内容（支持纯文本或 Markdown）...">${escaped}</textarea>
-  </div>
-  <div class="preview-pane hidden" id="previewPane">
-    <div class="markdown-body" id="preview"></div>
-  </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@keeex/qrcodejs-kx@1.0.2/qrcode.min.js"></script>
-<script>
-marked.setOptions({
-  highlight: function(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
-    }
-    return hljs.highlightAuto(code).value;
-  },
-  breaks: true,
-  gfm: true
-});
-
-const editor = document.getElementById('editor');
-const preview = document.getElementById('preview');
-const editorPane = document.getElementById('editorPane');
-const previewPane = document.getElementById('previewPane');
-const status = document.getElementById('status');
-let currentTab = 'edit';
-
-function switchTab(tab) {
-  currentTab = tab;
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+// 校验用户 Token 权限
+function checkAuth(request, env) {
+  const token = request.headers.get("X-Token") || "";
   
-  if (tab === 'edit') {
-    editorPane.classList.remove('hidden');
-    previewPane.classList.add('hidden');
-  } else if (tab === 'preview') {
-    editorPane.classList.add('hidden');
-    previewPane.classList.remove('hidden');
-    renderPreview();
-  } else {
-    editorPane.classList.remove('hidden');
-    previewPane.classList.remove('hidden');
-    renderPreview();
-  }
+  // 先检查环境变量中的 Token
+  if (env.TOKEN_ADMIN && token === env.TOKEN_ADMIN) return "admin";
+  if (env.TOKEN_EDITOR && token === env.TOKEN_EDITOR) return "write";
+  if (env.TOKEN_READ && token === env.TOKEN_READ) return "read";
+  
+  // 再检查代码中的 Token 表
+  return TOKENS[token] || null;
 }
 
-function renderPreview() {
-  preview.innerHTML = marked.parse(editor.value);
-  preview.querySelectorAll('pre code').forEach(block => {
-    hljs.highlightElement(block);
+// CORS 响应头
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Token"
+  };
+}
+
+// JSON 响应
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders()
+    }
   });
 }
 
-editor.addEventListener('input', () => {
-  if (currentTab === 'both') {
-    renderPreview();
+// 文本响应
+function textResponse(text, status = 200) {
+  return new Response(text, {
+    status,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      ...corsHeaders()
+    }
+  });
+}
+
+// HTML 响应
+function htmlResponse(html) {
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...corsHeaders()
+    }
+  });
+}
+
+// UTF-8 安全的 Base64 编码
+function utf8ToBase64(str) {
+  return btoa(unescape(encodeURIComponent(str)));
+}
+
+// UTF-8 安全的 Base64 解码
+function base64ToUtf8(str) {
+  return decodeURIComponent(escape(atob(str)));
+}
+
+// GitHub API 请求
+async function githubAPI(env, path, method = "GET", body = null) {
+  const token = getGitHubToken(env);
+  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`;
+  
+  const headers = {
+    "Authorization": `Bearer ${token}`,
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "Cloudflare-Worker-Editor"
+  };
+
+  const options = { method, headers };
+  if (body) {
+    options.body = JSON.stringify(body);
   }
-});
 
-function save() {
-  status.textContent = '保存中...';
-  fetch(location.href, { method:'POST', body: editor.value })
-    .then(r => {
-      if (r.ok) {
-        status.textContent = '✅ 已保存 ' + new Date().toLocaleTimeString();
-      } else {
-        throw new Error();
-      }
-    })
-    .catch(() => status.textContent = '❌ 保存失败');
+  const res = await fetch(url, options);
+  return res.json();
 }
 
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    save();
+// 获取文件树
+async function getTree(env) {
+  const token = getGitHubToken(env);
+  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/git/trees/${BRANCH}?recursive=1`;
+  
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "User-Agent": "Cloudflare-Worker-Editor"
+    }
+  });
+  
+  const data = await res.json();
+  
+  if (!data.tree) {
+    console.error("GitHub API Error:", data);
+    return [];
   }
-});
 
-function toggleShare() {
-  document.getElementById('share').classList.toggle('hidden');
+  return data.tree
+    .filter(item => item.type === "blob")
+    .map(item => item.path);
 }
 
-const basePath = location.href.split('/').slice(0,-1).join('/');
-
-function gen() {
-  const custom = document.getElementById('customToken').value.trim();
-  fetch(location.href, { method:'POST', body: 'GUESTGEN|' + custom })
-    .then(r => r.text())
-    .then(t => {
-      const subUrl = basePath + '/sub?token=' + t;
-      const v2Url = basePath + '/v2?token=' + t;
-      const clashUrl = basePath + '/clash?token=' + t;
-      const tvboxUrl = basePath + '/tvbox?token=' + t;
-      const txtUrl = basePath + '/txt?token=' + t;
-      const txtB64Url = basePath + '/txt?token=' + t + '&base64=1';
-      const mdUrl = basePath + '/md?token=' + t;
-      const rawUrl = basePath + '/raw?token=' + t;
-
-      document.getElementById('subUrl').value = subUrl;
-      document.getElementById('v2Url').value = v2Url;
-      document.getElementById('clashUrl').value = clashUrl;
-      document.getElementById('tvboxUrl').value = tvboxUrl;
-      document.getElementById('txtUrl').value = txtUrl;
-      document.getElementById('txtB64Url').value = txtB64Url;
-      document.getElementById('mdUrl').value = mdUrl;
-      document.getElementById('rawUrl').value = rawUrl;
-      document.getElementById('linkSection').style.display = 'block';
-      
-      // 生成二维码
-      const qrSub = document.getElementById('qrSub');
-      const qrMd = document.getElementById('qrMd');
-      qrSub.innerHTML = '';
-      qrMd.innerHTML = '';
-      new QRCode(qrSub, { text: subUrl, width:120, height:120 });
-      new QRCode(qrMd, { text: mdUrl, width:120, height:120 });
-    });
+// 获取文件内容
+async function getFile(env, path) {
+  const data = await githubAPI(env, path);
+  
+  if (data.message) {
+    return { error: data.message };
+  }
+  
+  if (!data.content) {
+    return { error: "No content" };
+  }
+  
+  return {
+    content: base64ToUtf8(data.content),
+    sha: data.sha,
+    size: data.size,
+    name: data.name
+  };
 }
 
-function copyUrl(id) {
-  const input = document.getElementById(id);
-  input.select();
-  document.execCommand('copy');
-  status.textContent = '✅ 已复制';
-  setTimeout(() => status.textContent = '', 2000);
+// 保存文件
+async function saveFile(env, path, content, sha = null, message = null) {
+  const body = {
+    message: message || `Update ${path} via Cloudflare Worker`,
+    content: utf8ToBase64(content),
+    branch: BRANCH
+  };
+  
+  if (sha) {
+    body.sha = sha;
+  }
+
+  return await githubAPI(env, path, "PUT", body);
 }
 
-switchTab('both');
-</script>
-</body>
-</html>`;
-}
 
-// ===== Markdown 渲染页 =====
-function viewerPageMD(markdown) {
-  const escaped = markdown
-    .replace(/\\/g, '\\\\')
-    .replace(/`/g, '\\`')
-    .replace(/\$/g, '\\$');
-
-  return `<!doctype html>
+// ========== 内嵌前端页面 ==========
+const FRONTEND_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
-<meta charset="utf-8">
-<title>${FileName}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.5.1/github-markdown-light.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloudflare Workers 在线编辑器</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
-body { margin:0; padding:0; background:#fff; }
-.container { max-width:980px; margin:0 auto; padding:32px; }
-.markdown-body { box-sizing:border-box; min-width:200px; }
-.markdown-body img { max-width:100%; }
-@media (max-width:767px) { .container { padding:16px; } }
-@media print { .container { padding:0; } }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; }
+  #editor { font-family: 'Fira Code', 'Consolas', monospace; tab-size: 2; }
+  #preview { line-height: 1.8; }
+  #preview h1 { font-size: 1.8em; font-weight: bold; border-bottom: 1px solid #444; padding-bottom: 0.3em; margin: 1em 0 0.5em; }
+  #preview h2 { font-size: 1.5em; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 0.2em; margin: 1em 0 0.5em; }
+  #preview h3 { font-size: 1.25em; font-weight: bold; margin: 1em 0 0.5em; }
+  #preview p { margin: 0.8em 0; }
+  #preview code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  #preview pre { background: #0f172a; padding: 1em; border-radius: 8px; overflow-x: auto; margin: 1em 0; }
+  #preview pre code { background: none; padding: 0; }
+  #preview ul, #preview ol { padding-left: 1.5em; margin: 0.5em 0; }
+  #preview li { margin: 0.3em 0; }
+  #preview blockquote { border-left: 4px solid #3b82f6; padding-left: 1em; margin: 1em 0; color: #94a3b8; }
+  #preview a { color: #60a5fa; text-decoration: underline; }
+  #preview table { border-collapse: collapse; margin: 1em 0; }
+  #preview th, #preview td { border: 1px solid #475569; padding: 8px 12px; }
+  #preview th { background: #334155; }
+  .tree-item { cursor: pointer; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+  .tree-item:hover { background: #334155; }
+  .tree-item.active { background: #3b82f6; color: white; }
+  .toast { animation: slideIn 0.3s ease; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #1e293b; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
 </style>
 </head>
-<body>
-<div class="container">
-  <article class="markdown-body" id="content"></article>
+<body class="bg-slate-900 text-slate-100 h-screen overflow-hidden">
+
+<!-- Token 认证弹窗 -->
+<div id="authModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm">
+  <div class="bg-slate-800 rounded-2xl p-8 w-full max-w-md shadow-2xl border border-slate-700">
+    <div class="text-center mb-6">
+      <div class="text-5xl mb-3">🔐</div>
+      <h2 class="text-2xl font-bold">身份验证</h2>
+      <p class="text-slate-400 mt-2">请输入访问令牌</p>
+    </div>
+    <input id="tokenInput" type="password" placeholder="输入 Token..." 
+      class="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4 text-center text-lg">
+    <div class="flex gap-3 mb-4">
+      <button id="authBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl font-semibold transition">
+        🔑 验证登录
+      </button>
+      <button id="guestBtn" class="flex-1 bg-slate-600 hover:bg-slate-500 py-3 rounded-xl font-semibold transition">
+        👁️ 游客浏览
+      </button>
+    </div>
+    <p id="authError" class="text-red-400 text-center hidden text-sm"></p>
+  </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+
+<!-- 主应用 -->
+<div id="app" class="flex h-full opacity-50 pointer-events-none transition-opacity">
+  <!-- 侧边栏 -->
+  <div class="w-72 bg-slate-800 border-r border-slate-700 flex flex-col">
+    <div class="p-4 border-b border-slate-700">
+      <h1 class="text-lg font-bold flex items-center gap-2">
+        <span class="text-2xl">📝</span> 在线编辑器
+      </h1>
+      <div class="mt-3 flex items-center justify-between">
+        <span id="roleTag" class="text-xs px-2 py-1 rounded-full bg-slate-600">未登录</span>
+        <button id="logoutBtn" class="text-xs text-slate-400 hover:text-red-400 transition hidden">退出</button>
+      </div>
+    </div>
+    <div class="p-3">
+      <input id="search" placeholder="搜索文件…" 
+        class="w-full px-4 py-2 pl-9 bg-slate-700 border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+    </div>
+    <div id="tree" class="flex-1 overflow-y-auto p-2">
+      <div class="text-center text-slate-500 py-12">
+        <div class="inline-block w-8 h-8 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin mb-3"></div>
+        <div class="text-sm">加载中...</div>
+      </div>
+    </div>
+    <div class="p-3 border-t border-slate-700">
+      <button id="refreshBtn" class="w-full bg-slate-700 hover:bg-slate-600 py-2 rounded-lg text-sm transition">
+        🔄 刷新列表
+      </button>
+    </div>
+  </div>
+
+  <!-- 编辑区 -->
+  <div class="flex-1 flex flex-col bg-slate-900">
+    <div class="h-14 bg-slate-800 border-b border-slate-700 flex items-center justify-between px-4">
+      <div class="flex items-center gap-3">
+        <span id="filepath" class="text-slate-400 font-mono text-sm">未选择文件</span>
+        <span id="fileStatus" class="text-xs px-2 py-0.5 rounded-full hidden"></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="previewToggle" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition hidden">
+          👁️ 预览
+        </button>
+        <button id="saveBtn" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-semibold transition disabled:opacity-40" disabled>
+          💾 保存
+        </button>
+      </div>
+    </div>
+    <div id="panes" class="flex-1 flex overflow-hidden">
+      <div id="welcome" class="flex-1 flex items-center justify-center">
+        <div class="text-center">
+          <div class="text-7xl mb-6">📄</div>
+          <h2 class="text-2xl font-bold mb-3">欢迎使用在线编辑器</h2>
+          <p class="text-slate-400">从左侧选择文件开始编辑</p>
+        </div>
+      </div>
+      <textarea id="editor" class="hidden flex-1 bg-slate-950 text-slate-100 p-4 resize-none focus:outline-none text-sm leading-relaxed" spellcheck="false"></textarea>
+      <div id="preview" class="hidden w-1/2 bg-slate-850 p-6 overflow-y-auto border-l border-slate-700"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toasts" class="fixed top-4 right-4 space-y-2 z-50"></div>
+
 <script>
-marked.setOptions({
-  highlight: function(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
+const $ = id => document.getElementById(id);
+const state = { currentFile: null, currentSha: null, originalContent: '', userRole: null, userToken: '', fileList: [], isPreviewVisible: true };
+
+function toast(msg, type = 'info') {
+  const colors = { success: 'bg-green-600', error: 'bg-red-600', info: 'bg-blue-600', warning: 'bg-yellow-600' };
+  const div = document.createElement('div');
+  div.className = 'toast ' + colors[type] + ' text-white px-4 py-3 rounded-lg shadow-lg min-w-64';
+  div.textContent = msg;
+  $('toasts').appendChild(div);
+  setTimeout(() => { div.style.opacity = '0'; setTimeout(() => div.remove(), 300); }, 3000);
+}
+
+function getFileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const icons = { md: '📝', txt: '📄', json: '📋', js: '🟨', html: '🌐', css: '🎨', py: '🐍' };
+  return icons[ext] || '📄';
+}
+
+async function api(endpoint, options = {}) {
+  const headers = { ...options.headers };
+  if (state.userToken) headers['X-Token'] = state.userToken;
+  return fetch(endpoint, { ...options, headers });
+}
+
+async function loadTree() {
+  $('tree').innerHTML = '<div class="text-center py-8"><div class="inline-block w-6 h-6 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"></div></div>';
+  try {
+    const res = await api('/api/tree');
+    state.fileList = await res.json();
+    renderTree(state.fileList);
+  } catch (e) {
+    $('tree').innerHTML = '<div class="text-center text-red-400 py-8">加载失败</div>';
+  }
+}
+
+function renderTree(files, filter = '') {
+  const filtered = filter ? files.filter(f => f.toLowerCase().includes(filter.toLowerCase())) : files;
+  if (!filtered.length) { $('tree').innerHTML = '<div class="text-center text-slate-500 py-8">无匹配文件</div>'; return; }
+  
+  const groups = {};
+  filtered.forEach(file => {
+    const parts = file.split('/');
+    const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '根目录';
+    if (!groups[folder]) groups[folder] = [];
+    groups[folder].push({ path: file, name: parts[parts.length - 1] });
+  });
+  
+  let html = '';
+  Object.keys(groups).sort().forEach(folder => {
+    html += '<div class="text-slate-500 text-xs px-3 py-2 mt-2">📁 ' + folder + '</div>';
+    groups[folder].forEach(file => {
+      html += '<div class="tree-item flex items-center gap-2" data-path="' + file.path + '">' + getFileIcon(file.name) + ' <span class="truncate">' + file.name + '</span></div>';
+    });
+  });
+  
+  $('tree').innerHTML = html;
+  $('tree').querySelectorAll('.tree-item').forEach(el => el.addEventListener('click', () => loadFile(el.dataset.path)));
+}
+
+async function loadFile(path) {
+  $('filepath').textContent = '加载中...';
+  try {
+    const res = await api('/api/file?path=' + encodeURIComponent(path));
+    const data = await res.json();
+    
+    if (data.error) throw new Error(data.error);
+    
+    state.currentFile = path;
+    state.currentSha = data.sha;
+    state.originalContent = data.content;
+    
+    $('filepath').textContent = path;
+    $('editor').value = data.content;
+    $('welcome').classList.add('hidden');
+    $('editor').classList.remove('hidden');
+    
+    if (path.endsWith('.md')) {
+      $('previewToggle').classList.remove('hidden');
+      $('preview').classList.remove('hidden');
+      $('editor').classList.add('w-1/2');
+      updatePreview();
+    } else {
+      $('previewToggle').classList.add('hidden');
+      $('preview').classList.add('hidden');
+      $('editor').classList.remove('w-1/2');
     }
-    return hljs.highlightAuto(code).value;
-  },
-  breaks: true,
-  gfm: true
+    
+    document.querySelectorAll('.tree-item').forEach(el => el.classList.toggle('active', el.dataset.path === path));
+    updateSaveBtn();
+  } catch (e) {
+    toast('加载失败: ' + e.message, 'error');
+  }
+}
+
+async function saveFile() {
+  if (!state.currentFile || !state.userRole || state.userRole === 'read') return;
+  
+  $('saveBtn').disabled = true;
+  $('saveBtn').textContent = '⏳ 保存中...';
+  
+  try {
+    const res = await api('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: state.currentFile, content: $('editor').value, sha: state.currentSha })
+    });
+    
+    if (res.status === 403) throw new Error('无权限');
+    const data = await res.json();
+    
+    if (data.content?.sha) {
+      state.currentSha = data.content.sha;
+      state.originalContent = $('editor').value;
+      toast('保存成功!', 'success');
+    } else if (data.message) {
+      throw new Error(data.message);
+    }
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  } finally {
+    $('saveBtn').disabled = false;
+    $('saveBtn').textContent = '💾 保存';
+    updateSaveBtn();
+  }
+}
+
+function updatePreview() {
+  if (state.currentFile?.endsWith('.md')) {
+    $('preview').innerHTML = marked.parse($('editor').value);
+    $('preview').querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+  }
+}
+
+function updateSaveBtn() {
+  $('saveBtn').disabled = !state.userRole || state.userRole === 'read' || !state.currentFile;
+}
+
+function updateRoleUI() {
+  const cfg = { admin: ['👑 管理员', 'bg-purple-600'], write: ['✏️ 编辑者', 'bg-green-600'], read: ['👁️ 只读', 'bg-blue-600'] };
+  if (state.userRole && cfg[state.userRole]) {
+    $('roleTag').textContent = cfg[state.userRole][0];
+    $('roleTag').className = 'text-xs px-2 py-1 rounded-full ' + cfg[state.userRole][1];
+    $('logoutBtn').classList.remove('hidden');
+  } else {
+    $('roleTag').textContent = '🚶 游客';
+    $('roleTag').className = 'text-xs px-2 py-1 rounded-full bg-slate-600';
+  }
+  updateSaveBtn();
+}
+
+async function verifyToken(token) {
+  try {
+    const res = await fetch('/api/verify', { headers: { 'X-Token': token } });
+    if (res.ok) {
+      const data = await res.json();
+      return data.role;
+    }
+  } catch (e) {}
+  return null;
+}
+
+$('authBtn').addEventListener('click', async () => {
+  const token = $('tokenInput').value.trim();
+  if (!token) { $('authError').textContent = '请输入 Token'; $('authError').classList.remove('hidden'); return; }
+  
+  const role = await verifyToken(token);
+  if (role) {
+    state.userToken = token;
+    state.userRole = role;
+    localStorage.setItem('editorToken', token);
+    $('authModal').classList.add('hidden');
+    $('app').classList.remove('opacity-50', 'pointer-events-none');
+    updateRoleUI();
+    loadTree();
+    toast('登录成功! 权限: ' + role, 'success');
+  } else {
+    $('authError').textContent = 'Token 无效';
+    $('authError').classList.remove('hidden');
+  }
 });
-const markdown = \`${escaped}\`;
-document.getElementById('content').innerHTML = marked.parse(markdown);
-document.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+
+$('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('authBtn').click(); });
+
+$('guestBtn').addEventListener('click', () => {
+  $('authModal').classList.add('hidden');
+  $('app').classList.remove('opacity-50', 'pointer-events-none');
+  updateRoleUI();
+  loadTree();
+});
+
+$('logoutBtn').addEventListener('click', () => {
+  state.userRole = null;
+  state.userToken = '';
+  localStorage.removeItem('editorToken');
+  updateRoleUI();
+  toast('已退出', 'info');
+});
+
+$('search').addEventListener('input', e => renderTree(state.fileList, e.target.value));
+$('editor').addEventListener('input', () => { if (state.currentFile?.endsWith('.md')) updatePreview(); });
+$('saveBtn').addEventListener('click', saveFile);
+$('refreshBtn').addEventListener('click', loadTree);
+$('previewToggle').addEventListener('click', () => {
+  state.isPreviewVisible = !state.isPreviewVisible;
+  $('preview').classList.toggle('hidden', !state.isPreviewVisible);
+  $('editor').classList.toggle('w-1/2', state.isPreviewVisible);
+});
+
+document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (!$('saveBtn').disabled) saveFile(); } });
+
+// 自动登录
+const saved = localStorage.getItem('editorToken');
+if (saved) {
+  verifyToken(saved).then(role => {
+    if (role) {
+      state.userToken = saved;
+      state.userRole = role;
+      $('authModal').classList.add('hidden');
+      $('app').classList.remove('opacity-50', 'pointer-events-none');
+      updateRoleUI();
+      loadTree();
+    }
+  });
+}
 </script>
 </body>
 </html>`;
-}
+
+
+// ========== 路由处理 ==========
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // 处理 CORS 预检请求
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders() });
+    }
+
+    // -------- 页面路由 --------
+    
+    // 首页 - 返回内嵌的前端页面
+    if (path === "/" || path === "/index.html") {
+      return htmlResponse(FRONTEND_HTML);
+    }
+
+    // -------- API 路由 --------
+
+    // 验证 Token
+    if (path === "/api/verify") {
+      const role = checkAuth(request, env);
+      if (role) {
+        return jsonResponse({ success: true, role });
+      }
+      return jsonResponse({ success: false, message: "Invalid token" }, 401);
+    }
+
+    // 获取文件树
+    if (path === "/api/tree") {
+      try {
+        const files = await getTree(env);
+        return jsonResponse(files);
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // 获取文件内容
+    if (path === "/api/file") {
+      const filePath = url.searchParams.get("path");
+      if (!filePath) {
+        return jsonResponse({ error: "Missing path parameter" }, 400);
+      }
+      
+      try {
+        const result = await getFile(env, filePath);
+        if (result.error) {
+          return jsonResponse({ error: result.error }, 404);
+        }
+        return jsonResponse(result);
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // 保存文件（需要权限）
+    if (path === "/api/save") {
+      const role = checkAuth(request, env);
+      
+      if (!role) {
+        return jsonResponse({ error: "Unauthorized" }, 401);
+      }
+      
+      if (role === "read") {
+        return jsonResponse({ error: "No write permission" }, 403);
+      }
+
+      try {
+        const body = await request.json();
+        const { path: filePath, content, sha } = body;
+        
+        if (!filePath || content === undefined) {
+          return jsonResponse({ error: "Missing path or content" }, 400);
+        }
+        
+        const result = await saveFile(env, filePath, content, sha);
+        
+        if (result.message && result.message.includes("sha")) {
+          return jsonResponse({ error: "File was modified. Please refresh and try again." }, 409);
+        }
+        
+        return jsonResponse(result);
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // 获取文件元信息
+    if (path === "/api/meta") {
+      const filePath = url.searchParams.get("path");
+      if (!filePath) {
+        return jsonResponse({ error: "Missing path" }, 400);
+      }
+      
+      try {
+        const data = await githubAPI(env, filePath);
+        return jsonResponse({ sha: data.sha, size: data.size, name: data.name });
+      } catch (e) {
+        return jsonResponse({ error: e.message }, 500);
+      }
+    }
+
+    // 404
+    return jsonResponse({ error: "Not found" }, 404);
+  }
+};
