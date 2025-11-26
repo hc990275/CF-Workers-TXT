@@ -1,305 +1,196 @@
-# 📄 **README.md（完整成品，可直接发布到 GitHub）**
+# 📘 README.md（完整可用）
 
-````markdown
-# 🌐 Cloudflare Worker 云笔记系统（Cloud Notebook System）
-
-基于 **Cloudflare Workers + KV** 构建的 **在线云笔记 / Markdown 文档系统**。  
-支持多文件、多目录、Markdown 渲染、权限控制、Token 分享、Base64 输出、订阅配置等功能。
-
-特点：  
-**零后端 / 无服务器 / 无限扩展 / 高速 CDN / 隐私安全 / 支持多管理员。**
+```markdown
+# Cloudflare Workers 在线文件编辑器  
+基于 **Cloudflare Workers + GitHub Raw** 的在线记事本 / 文件编辑器。  
+支持在线浏览、编辑、保存 GitHub 里的文件，并提供 Markdown 预览、树形目录、Token 权限控制等功能。
 
 ---
 
 ## ✨ 功能特性
 
-### 🗂️ 文件系统（树状结构）
-- 无限层级目录（Folder）
-- 文件管理（创建 / 删除 / 重命名 / 移动）
-- 文件树实时刷新
-- 搜索文件 / 目录
+### 🔒 Token 权限系统
+- **只读 Token**：可浏览、查看文件，不允许编辑  
+- **编辑 Token**：允许编辑并保存文件  
+- **管理员 Token**：未来支持更多管理功能  
 
-### 📝 编辑器（专业级）
-- Markdown 实时渲染（GitHub 风格）
-- JSON 自动高亮 + 格式化
-- YAML 高亮
-- TXT 文本显示
-- 双栏模式（编辑 / 预览 / 分栏）
-- 自动保存（防抖 1.5 秒）
-- 编辑器支持快捷键
+### 📁 文件树（自动从 GitHub 生成）
+- 自动递归扫描 GitHub 仓库  
+- 自动识别文件夹与文件  
+- 点击加载内容，无需刷新  
+- 支持搜索过滤  
 
-### 🔐 权限系统（核心）
-- Token-based 权限控制  
-- **read / edit / admin** 三级权限  
-- 每个文件独立的 Token（自动生成）  
-- 多管理员支持  
-- 访客无权限无法访问任何文件  
+### ✍ 在线编辑器
+- 实时渲染 Markdown（marked.js）  
+- 支持代码高亮（highlight.js）  
+- 双栏编辑（左编辑、右预览）  
+- 自动记住上次打开的文件  
 
-### 📤 多格式输出
-| 路径 | 输出类型 | 用途 |
-|------|----------|------|
-| `/txt?file=&token=` | text/plain | 订阅、配置文件 |
-| `/md?file=&token=` | Markdown 渲染页面 | 文档展示 |
-| `/raw?file=&token=` | 文件下载 | 直接下载原始内容 |
-| `/sub?file=&token=` | 自动判断类型 | 默认分享链接 |
-| `/b64?file=&token=` | Base64 | 节点订阅、V2/TUIC/VMess |
+### 💾 GitHub API 文件保存
+- 保存时自动 base64 编码  
+- 自动获取 SHA（更新文件必须）  
+- 在 GitHub 提交时自动生成 commit  
 
-### 🎨 管理后台（Obsidian/VSCode 风格）
-- 左侧目录树
-- 点击即加载文件
-- 右键菜单（新建 / 删除 / 重命名 / 移动）
-- 文件 Token 显示 + 一键复制
-- 自动识别文件类型（md/json/yaml/txt）
-- 文件夹展开/折叠动画
+### 💎 不依赖 Build 工具
+无需 Node.js，无需打包，所有文件均静态托管于 GitHub。
 
 ---
 
-# 🚀 快速开始
-
-## 1. 克隆项目
-```bash
-git clone https://github.com/yourname/cloudflare-notebook.git
-cd cloudflare-notebook
-````
-
-## 2. 创建 Cloudflare Worker
-
-登录 Cloudflare → Workers & Pages → Create Worker → Bind KV。
-
-## 3. 创建 KV Namespace
-
-名称随意，例如：
+## 📂 项目结构
 
 ```
-NOTE_KV
-```
 
-## 4. Worker → Settings → Variables → KV Bindings
+CF-Workers-TXT/
+│
+├── index.html          # 主界面
+├── main.js             # 前端逻辑
+├── style.css           # 样式
+│
+├── libs/               # 第三方库
+│   ├── marked.min.js
+│   └── highlight.min.js
+│
+├── notes/              # 你的笔记内容（随意创建）
+│    ├── README.md
+│    └── test.txt
+│
+└── tree.json           # Worker 自动生成
 
-添加：
-
-```
-KV = NOTE_KV
-```
-
-## 5. 添加环境变量（管理员 UUID）
-
-例如：
-
-```
-ADMIN_UUID = admin-uuid-1
-ADMIN_UUID = admin-uuid-2
-```
-
-可以使用任意字符串作为管理员入口路径。
-
-## 6. 部署 Worker
-
-将项目中所有 JS 模块合并成你的 Worker 脚本后，点击 **Deploy**。
-
----
-
-# 🔑 管理后台入口
-
-访问：
-
-```
-https://<your-worker-domain>/<adminUUID>
-```
-
-例如：
-
-```
-https://note.example.workers.dev/admin-uuid-1
-```
-
-如果你设置多个管理员，每个路径都可以进入管理后台。
-
----
-
-# 🗂️ 文件管理操作
-
-左侧树状结构支持：
-
-| 操作      | 方法         |
-| ------- | ---------- |
-| 新建文件    | 右键 → 新建文件  |
-| 新建文件夹   | 右键 → 新建文件夹 |
-| 删除      | 右键 → 删除    |
-| 重命名     | 右键 → 重命名   |
-| 移动      | 右键 → 移动到…  |
-| 搜索      | 顶部搜索框      |
-| 展开/折叠目录 | 点击文件夹即可    |
-
----
-
-# ✍️ 编辑器说明
-
-支持自动识别格式：
-
-| 扩展名            | 渲染方式                |
-| -------------- | ------------------- |
-| `.md`          | Markdown（GitHub 样式） |
-| `.json`        | 自动格式化 + JSON 高亮     |
-| `.yaml / .yml` | YAML 高亮             |
-| `.txt`         | 纯文本                 |
-
-右侧面板支持：
-
-* Markdown 实时预览
-* JSON 自动格式化按钮
-* 双栏视图切换
-* 自动保存（1.5s 防抖）
-
----
-
-# 🔐 权限系统说明（Token-Based）
-
-每个文件自动生成两个 Token：
-
-| Token | 权限  | 适用功能        |
-| ----- | --- | ----------- |
-| read  | 只读  | 查看、渲染、订阅    |
-| edit  | 可编辑 | 编辑、保存、删除、移动 |
-| admin | 超管  | 无限制权限       |
-
-在管理界面右下角会显示：
-
-```
-READ: xxxxxxx
-EDIT: yyyyyyy
-```
-
-点击“复制”按钮即可一键复制。
-
----
-
-# 🌍 访客访问（文件公开分享）
-
-## ① 纯文本模式
-
-```
-https://your.worker/txt?file=/docs/readme.md&token=READ_TOKEN
-```
-
-## ② Markdown 渲染（网页显示）
-
-```
-https://your.worker/md?file=/docs/readme.md&token=READ_TOKEN
-```
-
-## ③ 下载文件原文
-
-```
-https://your.worker/raw?file=/config.yaml&token=READ_TOKEN
-```
-
-## ④ Base64 输出（订阅场景）
-
-```
-https://your.worker/b64?file=/nodes.txt&token=READ_TOKEN
-```
-
-## ⑤ 智能模式（推荐分享链接）
-
-```
-https://your.worker/sub?file=/notes/test.md&token=READ_TOKEN
-```
-
-系统会自动根据文件类型输出：
-
-* `.md` → HTML 渲染
-* `.json/.yaml/.txt` → 纯文本
-
----
-
-# 🔧 API 文档（Worker 后端）
-
-所有 API 入口为：
-
-```
-/api/*
-```
-
-| 路径               | 说明         |
-| ---------------- | ---------- |
-| `/api/tree`      | 获取文件树      |
-| `/api/content`   | 获取文件内容     |
-| `/api/write`     | 保存内容       |
-| `/api/create`    | 新建文件       |
-| `/api/mkdir`     | 新建文件夹      |
-| `/api/delete`    | 删除节点       |
-| `/api/rename`    | 重命名        |
-| `/api/move`      | 移动         |
-| `/api/search`    | 搜索         |
-| `/api/token`     | 重生成 token  |
-| `/api/token_all` | 获取所有 token |
-
-所有 API 需要权限（read/edit/admin）。
-
----
-
-# 📸 截图示例（可替换）
-
-你可以自行添加：
-
-```
-/screenshot/main.png
-/screenshot/editor.png
-/screenshot/sub.png
-```
-
-并在 README 中添加：
-
-```markdown
-![管理界面](screenshot/main.png)
-![编辑器](screenshot/editor.png)
 ```
 
 ---
 
-# 🧱 项目结构（推荐）
+# 🚀 Cloudflare Worker 部署步骤
+
+## 1. 创建 Worker
+进入 Cloudflare Dashboard → Workers → Create
+
+把 `worker.js` 全部复制进去。
+
+---
+
+## 2. 添加环境变量
+
+Cloudflare Worker → Settings → Variables 添加：
+
+| 名称 | 值 | 说明 |
+|------|------|------|
+| `GITHUBWEB` | 你的 GitHub Token | 必须包含 repo 权限 |
+| `UUID-READ-ONLY` | 你的 UUID | 浏览权限 |
+| `UUID-EDITOR-01` | 你的 UUID | 编辑权限 |
+| `UUID-ADMIN-01` | 你的 UUID | 管理权限 |
+
+> 你可以添加无数量限制的 UUID。
+
+---
+
+## 3. 前端文件放到 GitHub（本仓库）
+将：
+
+- index.html  
+- main.js  
+- style.css  
+- libs/  
+
+全部放入仓库根目录。
+
+Worker 会自动从：
+```
+
+[https://raw.githubusercontent.com/](https://raw.githubusercontent.com/)<owner>/<repo>/main/
 
 ```
-cloudflare-notebook/
- ├── worker.js          # 完整 Worker 主文件 (模块1~8)
- ├── README.md
- ├── screenshot/
- │    ├── main.png
- │    ├── editor.png
- │    └── sub.png
- └── LICENSE (可选)
+加载静态页面。
+
+---
+
+## 4. 访问界面
+
+访问 Worker 地址：
+
+```
+
+[https://你的worker.workers.dev](https://你的worker.workers.dev)
+
+```
+
+系统会提示输入 Token：
+
+- 只读 Token → 浏览文件  
+- 编辑 Token → 编辑 + 保存  
+- 管理 Token → 未来增强管理面板  
+
+---
+
+## 🧩 API 说明（由 Worker 提供）
+
+### 获取文件树
+```
+
+GET /api/tree
+
+```
+
+### 获取文件内容
+```
+
+GET /api/file?path=<文件路径>
+
+```
+
+### 保存文件
+```
+
+POST /api/save
+Headers:
+X-Token: <编辑或管理员 Token>
+Body:
+{
+"path": "notes/test.txt",
+"content": "新的内容"
+}
+
 ```
 
 ---
 
-# 📌 许可证
+## 📜 如何使用 notes/ 作为云笔记目录？
 
-推荐使用 MIT：
+非常简单：
+
+在 GitHub 仓库添加：
 
 ```
-MIT License
+
+notes/
+日记.md
+待办事项.yaml
+config.json
+life/
+计划.txt
+
 ```
+
+Worker 会自动读取并生成树形目录。
 
 ---
 
-# 💬 支持增强功能（可继续定制）
+## 🛠 第三方库
 
-我可以为你继续增强：
+- [marked](https://github.com/markedjs/marked) → Markdown 渲染  
+- [highlight.js](https://highlightjs.org/) → 代码高亮  
 
-* [ ] 暗色模式（Dark Theme）
-* [ ] Monaco Editor（VSCode 编辑器）
-* [ ] 文件拖拽排序/拖拽移动
-* [ ] 多标签页（像 Obsidian）
-* [ ] 文件版本历史（自动 diff）
-* [ ] WebDAV 同步
-* [ ] 数据备份到 R2
+均本地存放在 `/libs` 下，无需 CDN。
 
 ---
 
-📢 如果你希望我再自动生成：
+## ❤️ Credits
 
-* `LICENSE`
-* `CONTRIBUTING.md`
-* `CHANGELOG.md`
-* GitHub 仓库推荐设置
+项目使用 Cloudflare Workers + GitHub Raw 实现，无需服务器、无需数据库，稳定可靠。
+
+---
+
+## 📧 联系作者
+
+如需增强（分享链接、二级密码、版本历史、WebDAV 适配等），可通过 GitHub Issues 提交需求。
+```
