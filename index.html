@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloudflare Workers 在线编辑器</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+  body { font-family: 'Segoe UI', system-ui, sans-serif; }
+  #editor { font-family: 'Fira Code', 'Consolas', monospace; tab-size: 2; }
+  
+  /* Markdown 预览样式 */
+  #preview { line-height: 1.8; }
+  #preview h1 { font-size: 1.8em; font-weight: bold; border-bottom: 1px solid #444; padding-bottom: 0.3em; margin: 1em 0 0.5em; }
+  #preview h2 { font-size: 1.5em; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 0.2em; margin: 1em 0 0.5em; }
+  #preview h3 { font-size: 1.25em; font-weight: bold; margin: 1em 0 0.5em; }
+  #preview p { margin: 0.8em 0; }
+  #preview code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  #preview pre { background: #0f172a; padding: 1em; border-radius: 8px; overflow-x: auto; margin: 1em 0; }
+  #preview pre code { background: none; padding: 0; }
+  #preview ul, #preview ol { padding-left: 1.5em; margin: 0.5em 0; }
+  #preview li { margin: 0.3em 0; }
+  #preview blockquote { border-left: 4px solid #3b82f6; padding-left: 1em; margin: 1em 0; color: #94a3b8; font-style: italic; }
+  #preview a { color: #60a5fa; text-decoration: underline; }
+  #preview table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  #preview th, #preview td { border: 1px solid #475569; padding: 8px 12px; text-align: left; }
+  #preview th { background: #334155; font-weight: 600; }
+  #preview img { max-width: 100%; border-radius: 8px; }
+  #preview hr { border: none; border-top: 1px solid #475569; margin: 1.5em 0; }
+  
+  /* 文件树样式 */
+  .tree-item { cursor: pointer; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+  .tree-item:hover { background: #334155; }
+  .tree-item.active { background: #3b82f6; color: white; }
+  .tree-folder { margin-top: 8px; }
+  .tree-folder-name { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  
+  /* 动画 */
+  .toast { animation: slideIn 0.3s ease; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  .fade-in { animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  
+  /* 滚动条 */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #1e293b; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+</style>
+</head>
+
+<body class="bg-slate-900 text-slate-100 h-screen overflow-hidden">
+
+<!-- Token 认证弹窗 -->
+<div id="authModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm">
+  <div class="bg-slate-800 rounded-2xl p-8 w-full max-w-md shadow-2xl border border-slate-700 fade-in">
+    <div class="text-center mb-6">
+      <div class="text-5xl mb-3">🔐</div>
+      <h2 class="text-2xl font-bold">身份验证</h2>
+      <p class="text-slate-400 mt-2">请输入您的访问令牌 (Token)</p>
+    </div>
+    
+    <input id="tokenInput" type="password" placeholder="输入 Token (UUID)..." 
+      class="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4 text-center text-lg tracking-wider">
+    
+    <div class="flex gap-3 mb-4">
+      <button id="authBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 py-3 rounded-xl font-semibold transition-all hover:scale-[1.02] active:scale-[0.98]">
+        🔑 验证登录
+      </button>
+      <button id="guestBtn" class="flex-1 bg-slate-600 hover:bg-slate-500 py-3 rounded-xl font-semibold transition-all hover:scale-[1.02] active:scale-[0.98]">
+        👁️ 游客浏览
+      </button>
+    </div>
+    
+    <p id="authError" class="text-red-400 text-center hidden text-sm"></p>
+    
+    <div class="mt-6 pt-4 border-t border-slate-700 text-center text-xs text-slate-500">
+      <p>💡 Token 包含 READ = 只读 | EDITOR = 编辑 | ADMIN = 管理</p>
+    </div>
+  </div>
+</div>
+
+<!-- 主应用 -->
+<div id="app" class="flex h-full opacity-50 pointer-events-none transition-opacity">
+  
+  <!-- 侧边栏 -->
+  <div id="sidebar" class="w-72 bg-slate-800 border-r border-slate-700 flex flex-col">
+    <!-- 头部 -->
+    <div class="p-4 border-b border-slate-700">
+      <h1 class="text-lg font-bold flex items-center gap-2">
+        <span class="text-2xl">📝</span> 在线编辑器
+      </h1>
+      <div class="mt-3 flex items-center justify-between">
+        <span id="roleTag" class="text-xs px-2 py-1 rounded-full bg-slate-600">未登录</span>
+        <button id="logoutBtn" class="text-xs text-slate-400 hover:text-red-400 transition hidden">
+          退出登录
+        </button>
+      </div>
+    </div>
+    
+    <!-- 搜索 -->
+    <div class="p-3">
+      <div class="relative">
+        <input id="search" placeholder="搜索文件…" 
+          class="w-full px-4 py-2 pl-9 bg-slate-700 border border-slate-600 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
+      </div>
+    </div>
+    
+    <!-- 文件树 -->
+    <div id="tree" class="flex-1 overflow-y-auto p-2 space-y-0.5">
+      <div class="text-center text-slate-500 py-12">
+        <div class="inline-block w-8 h-8 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin mb-3"></div>
+        <div class="text-sm">加载文件列表...</div>
+      </div>
+    </div>
+    
+    <!-- 底部操作 -->
+    <div class="p-3 border-t border-slate-700 space-y-2">
+      <button id="refreshBtn" class="w-full bg-slate-700 hover:bg-slate-600 py-2 rounded-lg text-sm transition flex items-center justify-center gap-2">
+        🔄 刷新列表
+      </button>
+    </div>
+  </div>
+
+  <!-- 编辑区域 -->
+  <div id="editor-area" class="flex-1 flex flex-col bg-slate-900">
+    
+    <!-- 顶部工具栏 -->
+    <div id="topbar" class="h-14 bg-slate-800 border-b border-slate-700 flex items-center justify-between px-4">
+      <div class="flex items-center gap-3">
+        <span id="filepath" class="text-slate-400 font-mono text-sm">未选择文件</span>
+        <span id="fileStatus" class="text-xs px-2 py-0.5 rounded-full hidden"></span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="previewToggle" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition hidden">
+          👁️ 预览
+        </button>
+        <button id="saveBtn" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-blue-600" disabled>
+          💾 保存
+        </button>
+      </div>
+    </div>
+
+    <!-- 编辑器面板 -->
+    <div id="panes" class="flex-1 flex overflow-hidden">
+      
+      <!-- 欢迎页 -->
+      <div id="welcome" class="flex-1 flex items-center justify-center">
+        <div class="text-center max-w-md">
+          <div class="text-7xl mb-6">📄</div>
+          <h2 class="text-2xl font-bold mb-3">欢迎使用在线编辑器</h2>
+          <p class="text-slate-400 mb-6">从左侧文件树选择一个文件开始编辑</p>
+          <div class="bg-slate-800 rounded-xl p-4 text-sm text-slate-400 space-y-2">
+            <p>📝 支持 Markdown 实时预览</p>
+            <p>⌨️ 快捷键: <kbd class="bg-slate-700 px-2 py-0.5 rounded">Ctrl+S</kbd> 保存</p>
+            <p>🔍 支持文件搜索过滤</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 编辑器 -->
+      <textarea id="editor" 
+        class="hidden flex-1 bg-slate-950 text-slate-100 p-4 resize-none focus:outline-none text-sm leading-relaxed"
+        placeholder="在此编辑内容..."
+        spellcheck="false"></textarea>
+      
+      <!-- Markdown 预览 -->
+      <div id="preview" class="hidden w-1/2 bg-slate-850 p-6 overflow-y-auto border-l border-slate-700"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 通知容器 -->
+<div id="toasts" class="fixed top-4 right-4 space-y-2 z-50"></div>
+
+<script>
+// ========== 配置 ==========
+const API_BASE = '';  // 留空表示当前域名
+
+// ========== 状态管理 ==========
+let state = {
+  currentFile: null,
+  currentSha: null,
+  originalContent: '',
+  userRole: null,
+  userToken: '',
+  fileList: [],
+  isPreviewVisible: true
+};
+
+// ========== DOM 元素 ==========
+const $ = id => document.getElementById(id);
+const els = {
+  authModal: $('authModal'),
+  tokenInput: $('tokenInput'),
+  authBtn: $('authBtn'),
+  guestBtn: $('guestBtn'),
+  authError: $('authError'),
+  app: $('app'),
+  roleTag: $('roleTag'),
+  logoutBtn: $('logoutBtn'),
+  search: $('search'),
+  tree: $('tree'),
+  filepath: $('filepath'),
+  fileStatus: $('fileStatus'),
+  editor: $('editor'),
+  preview: $('preview'),
+  welcome: $('welcome'),
+  saveBtn: $('saveBtn'),
+  previewToggle: $('previewToggle'),
+  refreshBtn: $('refreshBtn'),
+  toasts: $('toasts')
+};
+
+// ========== 工具函数 ==========
+function toast(message, type = 'info') {
+  const colors = {
+    success: 'bg-green-600',
+    error: 'bg-red-600',
+    info: 'bg-blue-600',
+    warning: 'bg-yellow-600'
+  };
+  const icons = {
+    success: '✅',
+    error: '❌',
+    info: 'ℹ️',
+    warning: '⚠️'
+  };
+  const div = document.createElement('div');
+  div.className = `toast ${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 min-w-64`;
+  div.innerHTML = `<span>${icons[type]}</span><span class="flex-1">${message}</span>`;
+  els.toasts.appendChild(div);
+  setTimeout(() => {
+    div.style.opacity = '0';
+    div.style.transform = 'translateX(100%)';
+    div.style.transition = 'all 0.3s ease';
+    setTimeout(() => div.remove(), 300);
+  }, 3000);
+}
+
+function getFileIcon(filename) {
+  const ext = filename.split('.').pop().toLowerCase();
+  const icons = {
+    'md': '📝', 'txt': '📄', 'json': '📋', 'js': '🟨',
+    'html': '🌐', 'css': '🎨', 'yml': '⚙️', 'yaml': '⚙️',
+    'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️', 'gif': '🖼️', 'svg': '🖼️',
+    'py': '🐍', 'go': '🔵', 'rs': '🦀', 'ts': '🔷', 'sh': '📜'
+  };
+  return icons[ext] || '📄';
+}
+
+function isMarkdown(filename) {
+  return filename && filename.toLowerCase().endsWith('.md');
+}
+
+function isTextFile(filename) {
+  const textExts = ['md', 'txt', 'json', 'js', 'html', 'css', 'yml', 'yaml', 'xml', 'py', 'go', 'rs', 'ts', 'sh', 'env', 'gitignore'];
+  const ext = filename.split('.').pop().toLowerCase();
+  return textExts.includes(ext) || !filename.includes('.');
+}
+
+// ========== API 请求 ==========
+async function api(endpoint, options = {}) {
+  const headers = { ...options.headers };
+  if (state.userToken) {
+    headers['X-Token'] = state.userToken;
+  }
+  
+  try {
+    const res = await fetch(API_BASE + endpoint, { ...options, headers });
+    return res;
+  } catch (e) {
+    console.error('API Error:', e);
+    throw e;
+  }
+}
+
+async function loadTree() {
+  els.tree.innerHTML = `
+    <div class="text-center text-slate-500 py-12">
+      <div class="inline-block w-8 h-8 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin mb-3"></div>
+      <div class="text-sm">加载文��列表...</div>
+    </div>
+  `;
+  
+  try {
+    const res = await api('/api/tree');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.fileList = await res.json();
+    renderTree(state.fileList);
+    toast(`已加载 ${state.fileList.length} 个文件`, 'success');
+  } catch (e) {
+    els.tree.innerHTML = `
+      <div class="text-center text-red-400 py-8 px-4">
+        <div class="text-3xl mb-2">❌</div>
+        <div class="text-sm mb-2">加载失败</div>
+        <div class="text-xs text-slate-500">${e.message}</div>
+      </div>
+    `;
+    toast('加载文件列表失败: ' + e.message, 'error');
+  }
+}
+
+async function loadFile(path) {
+  if (!isTextFile(path)) {
+    toast('不支持编辑此类型文件', 'warning');
+    return;
+  }
+  
+  els.filepath.textContent = '加载中...';
+  
+  try {
+    // 获取文件内容
+    const res = await api(`/api/file?path=${encodeURIComponent(path)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const content = await res.text();
+    
+    // 获取 SHA（用于 GitHub 更新）
+    try {
+      const metaRes = await api(`/api/meta?path=${encodeURIComponent(path)}`);
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        state.currentSha = meta.sha;
+      }
+    } catch (e) {
+      // 如果 meta API 不存在，尝试直接获取 SHA
+      console.warn('Meta API not available, SHA might be missing');
+      state.currentSha = null;
+    }
+    
+    state.currentFile = path;
+    state.originalContent = content;
+    
+    els.filepath.textContent = path;
+    els.editor.value = content;
+    
+    // 显示编辑器
+    els.welcome.classList.add('hidden');
+    els.editor.classList.remove('hidden');
+    
+    // Markdown 预览处理
+    if (isMarkdown(path)) {
+      els.previewToggle.classList.remove('hidden');
+      if (state.isPreviewVisible) {
+        els.preview.classList.remove('hidden');
+        els.editor.classList.remove('w-full');
+        els.editor.classList.add('w-1/2');
+      }
+      updatePreview();
+    } else {
+      els.previewToggle.classList.add('hidden');
+      els.preview.classList.add('hidden');
+      els.editor.classList.remove('w-1/2');
+      els.editor.classList.add('w-full');
+    }
+    
+    updateFileStatus();
+    updateSaveButton();
+    
+    // 高亮当前文件
+    document.querySelectorAll('.tree-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.path === path);
+    });
+    
+  } catch (e) {
+    els.filepath.textContent = '加载失败';
+    toast('加载文件失败: ' + e.message, 'error');
+  }
+}
+
+async function saveFile() {
+  if (!state.currentFile || state.userRole === 'read' || !state.userRole) {
+    toast('没有保存权限', 'error');
+    return;
+  }
+  
+  els.saveBtn.disabled = true;
+  els.saveBtn.innerHTML = '<span class="animate-spin inline-block">⏳</span> 保存中...';
+  
+  try {
+    const res = await api('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: state.currentFile,
+        content: els.editor.value,
+        sha: state.currentSha
+      })
+    });
+    
+    if (res.status === 403) {
+      throw new Error('没有保存权限');
+    }
+    
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    
+    const data = await res.json();
+    
+    if (data.content && data.content.sha) {
+      state.currentSha = data.content.sha;
+      state.originalContent = els.editor.value;
+      updateFileStatus();
+      toast('保存成功!', 'success');
+    } else if (data.message) {
+      throw new Error(data.message);
+    } else {
+      state.originalContent = els.editor.value;
+      updateFileStatus();
+      toast('保存成功!', 'success');
+    }
+    
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  } finally {
+    els.saveBtn.disabled = false;
+    els.saveBtn.textContent = '💾 保存';
+    updateSaveButton();
+  }
+}
+
+// ========== UI 渲染 ==========
+function renderTree(files, filter = '') {
+  const filtered = filter 
+    ? files.filter(f => f.toLowerCase().includes(filter.toLowerCase()))
+    : files;
+  
+  if (filtered.length === 0) {
+    els.tree.innerHTML = `
+      <div class="text-center text-slate-500 py-8">
+        <div class="text-3xl mb-2">🔍</div>
+        <div class="text-sm">没有找到匹配的文件</div>
+      </div>
+    `;
+    return;
+  }
+  
+  // 按文件夹分组
+  const groups = {};
+  filtered.forEach(file => {
+    const parts = file.split('/');
+    const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '📁 根目录';
+    if (!groups[folder]) groups[folder] = [];
+    groups[folder].push({ path: file, name: parts[parts.length - 1] });
+  });
+  
+  let html = '';
+  const sortedFolders = Object.keys(groups).sort((a, b) => {
+    if (a === '📁 根目录') return -1;
+    if (b === '📁 根目录') return 1;
+    return a.localeCompare(b);
+  });
+  
+  sortedFolders.forEach(folder => {
+    html += `
+      <div class="tree-folder">
+        <div class="tree-folder-name text-slate-500 px-3 py-2 flex items-center gap-1">
+          <span>📁</span> ${folder}
+        </div>
+    `;
+    
+    groups[folder]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach(file => {
+        const icon = getFileIcon(file.name);
+        const isText = isTextFile(file.name);
+        html += `
+          <div class="tree-item flex items-center gap-2 ${!isText ? 'opacity-50' : ''}" 
+               data-path="${file.path}" 
+               title="${file.path}">
+            <span>${icon}</span>
+            <span class="truncate flex-1">${file.name}</span>
+          </div>
+        `;
+      });
+    
+    html += '</div>';
+  });
+  
+  els.tree.innerHTML = html;
+  
+  // 绑定点击事件
+  els.tree.querySelectorAll('.tree-item').forEach(el => {
+    el.addEventListener('click', () => loadFile(el.dataset.path));
+  });
+  
+  // 恢复当前文件高亮
+  if (state.currentFile) {
+    const activeEl = els.tree.querySelector(`[data-path="${state.currentFile}"]`);
+    if (activeEl) activeEl.classList.add('active');
+  }
+}
+
+function updatePreview() {
+  if (isMarkdown(state.currentFile)) {
+    try {
+      els.preview.innerHTML = marked.parse(els.editor.value);
+      els.preview.querySelectorAll('pre code').forEach(block => {
+        hljs.highlightElement(block);
+      });
+    } catch (e) {
+      console.error('Markdown parse error:', e);
+    }
+  }
+}
+
+function updateFileStatus() {
+  const modified = els.editor.value !== state.originalContent;
+  els.fileStatus.classList.toggle('hidden', !modified);
+  
+  if (modified) {
+    els.fileStatus.textContent = '● 未保存';
+    els.fileStatus.className = 'text-xs px-2 py-0.5 rounded-full bg-yellow-600 text-yellow-100';
+  }
+}
+
+function updateSaveButton() {
+  const canSave = state.userRole && state.userRole !== 'read' && state.currentFile;
+  els.saveBtn.disabled = !canSave;
+}
+
+function updateRoleUI() {
+  const roleConfig = {
+    'admin': { label: '👑 管理员', color: 'bg-purple-600' },
+    'write': { label: '✏️ 编辑者', color: 'bg-green-600' },
+    'read':  { label: '👁️ 只读', color: 'bg-blue-600' }
+  };
+  
+  if (state.userRole && roleConfig[state.userRole]) {
+    const { label, color } = roleConfig[state.userRole];
+    els.roleTag.textContent = label;
+    els.roleTag.className = `text-xs px-2 py-1 rounded-full ${color}`;
+    els.logoutBtn.classList.remove('hidden');
+  } else {
+    els.roleTag.textContent = '🚶 游客';
+    els.roleTag.className = 'text-xs px-2 py-1 rounded-full bg-slate-600';
+    els.logoutBtn.classList.add('hidden');
+  }
+  
+  updateSaveButton();
+}
+
+function unlockApp() {
+  els.authModal.classList.add('hidden');
+  els.app.classList.remove('opacity-50', 'pointer-events-none');
+}
+
+// ========== 认证逻辑 ==========
+function parseTokenRole(token) {
+  // 根据 Token 内容判断权限
+  const t = token.toUpperCase();
+  if (t.includes('ADMIN')) return 'admin';
+  if (t.includes('EDITOR') || t.includes('WRITE')) return 'write';
+  if (t.includes('READ')) return 'read';
+  return null;
+}
+
+async function authenticate(token) {
+  if (!token) {
+    showAuthError('请输入 Token');
+    return false;
+  }
+  
+  const role = parseTokenRole(token);
+  if (!role) {
+    showAuthError('Token 格式无效，需包含 READ/EDITOR/ADMIN');
+    return false;
+  }
+  
+  // 可选：验证 Token 有效性
+  // const res = await api('/api/verify', { headers: { 'X-Token': token } });
+  // if (!res.ok) { showAuthError('Token 验证失败'); return false; }
+  
+  state.userToken = token;
+  state.userRole = role;
+  
+  localStorage.setItem('editorToken', token);
+  localStorage.setItem('editorRole', role);
+  
+  return true;
+}
+
+function showAuthError(msg) {
+  els.authError.textContent = msg;
+  els.authError.classList.remove('hidden');
+  els.tokenInput.classList.add('ring-2', 'ring-red-500');
+  setTimeout(() => {
+    els.tokenInput.classList.remove('ring-2', 'ring-red-500');
+  }, 2000);
+}
+
+function logout() {
+  state.userRole = null;
+  state.userToken = '';
+  localStorage.removeItem('editorToken');
+  localStorage.removeItem('editorRole');
+  updateRoleUI();
+  toast('已退出登录', 'info');
+}
+
+// ========== 事件绑定 ==========
+els.authBtn.addEventListener('click', async () => {
+  const token = els.tokenInput.value.trim();
+  if (await authenticate(token)) {
+    unlockApp();
+    updateRoleUI();
+    toast(`欢迎! 当前权限: ${state.userRole}`, 'success');
+    loadTree();
+  }
+});
+
+els.tokenInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') els.authBtn.click();
+  els.authError.classList.add('hidden');
+});
+
+els.guestBtn.addEventListener('click', () => {
+  state.userRole = null;
+  state.userToken = '';
+  unlockApp();
+  updateRoleUI();
+  toast('以游客身份浏览', 'info');
+  loadTree();
+});
+
+els.logoutBtn.addEventListener('click', logout);
+
+els.search.addEventListener('input', (e) => {
+  renderTree(state.fileList, e.target.value);
+});
+
+els.editor.addEventListener('input', () => {
+  updateFileStatus();
+  if (isMarkdown(state.currentFile)) {
+    updatePreview();
+  }
+});
+
+els.saveBtn.addEventListener('click', saveFile);
+
+els.refreshBtn.addEventListener('click', () => {
+  loadTree();
+});
+
+els.previewToggle.addEventListener('click', () => {
+  state.isPreviewVisible = !state.isPreviewVisible;
+  els.preview.classList.toggle('hidden', !state.isPreviewVisible);
+  els.editor.classList.toggle('w-1/2', state.isPreviewVisible);
+  els.editor.classList.toggle('w-full', !state.isPreviewVisible);
+  els.previewToggle.textContent = state.isPreviewVisible ? '📝 仅编辑' : '👁️ 预览';
+});
+
+// 快捷键
+document.addEventListener('keydown', (e) => {
+  // Ctrl+S 保存
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    if (!els.saveBtn.disabled) saveFile();
+  }
+  // Escape 关闭预览
+  if (e.key === 'Escape' && !els.preview.classList.contains('hidden')) {
+    els.previewToggle.click();
+  }
+});
+
+// ========== 初始化 ==========
+(function init() {
+  // 检查本地存储的认证信息
+  const savedToken = localStorage.getItem('editorToken');
+  const savedRole = localStorage.getItem('editorRole');
+  
+  if (savedToken && savedRole) {
+    state.userToken = savedToken;
+    state.userRole = savedRole;
+    unlockApp();
+    updateRoleUI();
+    loadTree();
+  }
+  
+  // 自动聚焦 Token 输入框
+  els.tokenInput.focus();
+})();
+</script>
+
+</body>
+</html>
